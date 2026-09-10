@@ -134,7 +134,7 @@ class ADASPipeline:
         
         try:
             self.animal_model = YOLO(ANIMAL_MODEL_PATH)
-            print(f"[animal model]     {self.pipeline.animal_model.names if pipeline.animal_model else None}")
+            print(f"[animal model]     {self.animal_model.names if self.animal_model else None}")
         except Exception as e:
             self.animal_model = None
             print(f"[WARNING] Animal model not loaded: {e}. Continuing without animal detection.")
@@ -285,7 +285,7 @@ class ADASPipeline:
                 for r in animal_results:
                     for box in r.boxes:
                         cls = int(box.cls[0])
-                        name = self.pipeline.animal_model.names if pipeline.animal_model else None[cls] if self.pipeline.animal_model.names if pipeline.animal_model else None else f"animal_{cls}"
+                        name = self.animal_model.names[cls] if self.animal_model and cls in self.animal_model.names else f"animal_{cls}"
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         
                         animal_width = ANIMAL_WIDTHS.get(name.lower(), DEFAULT_ANIMAL_WIDTH)
@@ -336,7 +336,7 @@ class ADASPipeline:
             except Exception as e:
                 print(f"[WARNING] Animal detection error: {e}")
         
-        self.pipeline.logger.log(self.frame_count, current_time, vehicles)
+        self.logger.log(self.frame_count, current_time, vehicles)
         
         # Find closest obstacles
         closest_vehicle = min(vehicles, key=lambda v: v["distance"], default=None)
@@ -350,40 +350,40 @@ class ADASPipeline:
         
         closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
         risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
-        self.pipeline.alert.check(risk_now)
+        self.alert.check(risk_now)
         
         if closest_obstacle and self.dashboard:
-            self.pipeline.dashboard.update(
+            self.dashboard.update(
                 closest_obstacle["distance"], closest_obstacle["speed"],
                 closest_obstacle["ttc"], closest_obstacle["risk"])
         
         # Brake prediction
         if closest_obstacle:
-            brake_pct, brake_col = self.pipeline.brake_pred.update(
+            brake_pct, brake_col = self.brake_pred.update(
                 closest_obstacle["distance"],
                 closest_obstacle["ttc"],
                 closest_obstacle["risk"],
                 speed_kmh=closest_obstacle["speed"],
                 risk_score=closest_obstacle.get("risk_score"))
         else:
-            brake_pct, brake_col = self.pipeline.brake_pred.update(
+            brake_pct, brake_col = self.brake_pred.update(
                 999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
         
-        self.pipeline.web_reporter.log_brake(session_t, brake_pct)
+        self.web_reporter.log_brake(session_t, brake_pct)
         
         # Trajectory planning
-        direction, trajectory_pts, is_safe = self.pipeline.traj_planner.compute_safe_trajectory(
+        direction, trajectory_pts, is_safe = self.traj_planner.compute_safe_trajectory(
             vehicles, animals, potholes, humps, frame.shape, drivable_mask)
         
         # Draw trajectory
-        frame = self.pipeline.traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
-        frame = self.pipeline.dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
+        frame = self.traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
+        frame = self.dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
         
         # Event capture
         if risk_now == "DANGER" and closest_obstacle:
             ttc_str = f"{closest_obstacle['ttc']:.1f}s" if closest_obstacle["ttc"] != float("inf") else "--"
             event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
-            self.pipeline.web_reporter.capture_event(frame, event_type, {
+            self.web_reporter.capture_event(frame, event_type, {
                 "dist": f"{closest_obstacle['distance']:.1f} m",
                 "ttc": ttc_str,
                 "vehicle": closest_obstacle["name"],
@@ -666,7 +666,7 @@ def run_desktop_mode():
             for r in animal_results:
                 for box in r.boxes:
                     cls = int(box.cls[0])
-                    name = pipeline.animal_model.names if pipeline.animal_model else None[cls] if pipeline.animal_model.names if pipeline.animal_model else None else f"animal_{cls}"
+                    name = animal_model.names[cls] if animal_model and cls in animal_model.names else f"animal_{cls}"
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     
                     # Get animal width from mapping or use default
@@ -1067,7 +1067,7 @@ def run_desktop_mode():
     elapsed_ms    = int((time.time() - loop_start) * 1000)
     remaining_ms  = max(1, int(frame_interval * 1000) - elapsed_ms)
     if cv2.waitKey(remaining_ms) & 0xFF == ord("q"):
-    break
+        break
 
 # End of main loop - cleanup outside the while loop
 cap.release()
