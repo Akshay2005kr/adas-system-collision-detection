@@ -28,13 +28,14 @@ from projection_3d import project_box_ground_point
 
 def render_3d_view(vehicles, frame_shape, focal_length, scene,
                     drivable_mask=None, lane_mask=None,
-                    potholes=None, humps=None, signs=None):
+                    potholes=None, humps=None, signs=None, animals=None):
     """vehicles: the SAME list of dicts adas_full_pipeline.py already
     builds each frame -- each dict needs 'box', 'name', 'distance', and
     either 'risk_color' or 'class_color' for the object's fill color.
     drivable_mask / lane_mask: boolean masks from seg_utils.build_mask.
     potholes / humps: lists of (x1,y1,x2,y2) boxes.
     signs: list of (name, x1,y1,x2,y2) -- traffic lights/signs.
+    animals: optional list of animal dicts with same structure as vehicles.
     All of these are already computed in the main loop -- pass them
     straight through, no extra work needed."""
     canvas = scene.new_canvas()
@@ -43,9 +44,18 @@ def render_3d_view(vehicles, frame_shape, focal_length, scene,
     scene.draw_hazards(canvas, potholes=potholes, humps=humps, signs=signs)
 
     # draw far-to-near so nearer objects correctly overlap farther ones
-    for v in sorted(vehicles, key=lambda v: -v["distance"]):
+    all_objects = list(vehicles)
+    if animals:
+        all_objects.extend(animals)
+    
+    for v in sorted(all_objects, key=lambda v: -v["distance"]):
         X, Y, Z = project_box_ground_point(v["box"], v["distance"], frame_shape, focal_length)
         color = v.get("risk_color") or v.get("class_color") or (200, 200, 200)
-        scene.draw_object(canvas, v["name"], position=(X, Y, Z), color=color)
+        kind = v.get("name", "car").lower()
+        # Map animal types to appropriate mesh kinds
+        if v.get("type") == "animal":
+            # Use person-like mesh for most animals
+            kind = "person"
+        scene.draw_object(canvas, kind, position=(X, Y, Z), color=color)
 
     return canvas

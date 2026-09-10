@@ -46,19 +46,21 @@ from tesla_view import build_known_mask, render_painted_background
 from car_renderer_3d import Scene3D
 from render_3d import render_3d_view
 
-# --- smooth brake, direction arrow, web report ---
+# --- smooth brake, direction arrow, web report, trajectory ---
 from brake_predictor import BrakePredictor
 from direction_predictor import DirectionPredictor
 from web_report_generator import WebReportGenerator
+from trajectory_planner import TrajectoryPlanner
 
 # ============================================================
-# 1.  MODEL PATHS  (>>> fix these 5 paths <<<)
+# 1.  MODEL PATHS  (>>> fix these 6 paths <<<)
 # ============================================================
 MAIN_MODEL_PATH     = "modals/car_best.pt"
 POTHOLE_MODEL_PATH  = "modals/bestphotole.pt"
 HUMP_MODEL_PATH     = "modals/besthumb.pt"
 LANE_MODEL_PATH     = "modals/linerodebest.pt"
 DRIVABLE_MODEL_PATH = "bdd100k_40k_yolov8n_seg_results/weights/best.pt"
+ANIMAL_MODEL_PATH   = "modals/animal_best.pt"
 
 model          = YOLO(MAIN_MODEL_PATH)
 pothole_model  = YOLO(POTHOLE_MODEL_PATH)
@@ -66,15 +68,24 @@ hump_model     = YOLO(HUMP_MODEL_PATH)
 lane_model     = YOLO(LANE_MODEL_PATH)
 drivable_model = YOLO(DRIVABLE_MODEL_PATH)
 
+# Load animal model with graceful fallback
+try:
+    animal_model = YOLO(ANIMAL_MODEL_PATH)
+    print(f"[animal model]     {animal_model.names}")
+except Exception as e:
+    animal_model = None
+    print(f"[WARNING] Animal model not loaded: {e}. Continuing without animal detection.")
+
 collision_model = CollisionModel("modals/best_model.pkl")
 dashboard       = LiveDashboard()
 logger          = DataLogger("logs/session_log.csv")
 alert           = AlertSystem()
 
-# --- smooth-brake / direction / report instances ---
+# --- smooth-brake / direction / report / trajectory instances ---
 brake_pred   = BrakePredictor(alpha_rise=0.18, alpha_fall=0.25)
 dir_pred     = DirectionPredictor(alpha=0.22)
 web_reporter = WebReportGenerator("reports")
+traj_planner = TrajectoryPlanner(alpha=0.25)
 
 print("[main model]     ", model.names)
 print("[lane model]     ", lane_model.names)
@@ -100,6 +111,14 @@ REAL_WIDTHS = {
     "person": 0.5, "rider": 0.6, "car": 1.8,
     "bus": 2.5, "truck": 2.5, "bike": 0.7, "motor": 0.7,
 }
+
+# Animal width mapping (configurable, with safe fallbacks)
+ANIMAL_WIDTHS = {
+    "dog": 0.4, "cat": 0.25, "cow": 0.6, "horse": 0.7,
+    "sheep": 0.5, "pig": 0.4, "goat": 0.35, "deer": 0.5,
+    "elephant": 2.5, "bear": 0.6, "zebra": 0.5, "giraffe": 0.8,
+}
+DEFAULT_ANIMAL_WIDTH = 0.4  # fallback for unknown animal classes
 
 CLASS_COLORS = {
     "car":           (255, 204, 102),
@@ -307,6 +326,7 @@ while True:
     lane_mask     = last_lane_mask
 
     vehicles = []
+    animals  = []
     signs    = []
 
     # ---- PASS 1: vehicles / persons ----
@@ -355,12 +375,6 @@ while True:
                     track_id, (x1, y1, x2, y2), frame.shape, final_distance, current_time)
 
                 # ---- NEW: continuous ML risk score, smoothed per-track ----
-                # This replaces predict_label() as the single source of
-                # truth for risk. A hard 0/1/2 label recomputed fresh
-                # every frame from noisy single-frame features is exactly
-                # what caused the brake floor to jump — smoothing the
-                # continuous probability BEFORE deriving the label fixes
-                # both the label flicker and the brake jumps at once.
                 raw_score  = collision_model.predict_proba(features[0])
                 prev_score = risk_score_history.get(track_id, raw_score)
                 risk_score = 0.35 * raw_score + 0.65 * prev_score
@@ -384,10 +398,71 @@ while True:
                 "risk_score": risk_score,
             })
 
+    # ---- ANIMAL DETECTION (if model loaded) ----
+    if animal_model is not None:
+        try:
+            animal_results = animal_model(frame, conf=0.35, iou=0.45, verbose=False)
+            for r in animal_results:
+                for box in r.boxes:
+                    cls = int(box.cls[0])
+                    name = animal_model.names[cls] if animal_model.names else f"animal_{cls}"
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    
+                    # Get animal width from mapping or use default
+                    animal_width = ANIMAL_WIDTHS.get(name.lower(), DEFAULT_ANIMAL_WIDTH)
+                    
+                    pixel_width = max(x2 - x1, 1)
+                    raw_distance = (animal_width * FOCAL_LENGTH) / pixel_width
+                    
+                    speed_kmh, ttc, risk = 0.0, float("inf"), "SAFE"
+                    final_distance = raw_distance
+                    risk_score = 0.0
+                    
+                    if box.id is not None:
+                        track_id = int(box.id[0])
+                        if track_id in track_history:
+                            prev = track_history[track_id]
+                            sm_d = prev["dist"] * 0.8 + raw_distance * 0.2
+                            dt = current_time - prev["time"]
+                            sm_spd = 0.0
+                            if dt > 0:
+                                raw_spd_ms = (prev["dist"] - sm_d) / dt
+                                sm_spd = prev.get("speed", 0) * 0.8 + raw_spd_ms * 0.2
+                                if sm_spd > 0.3:
+                                    speed_kmh = sm_spd * 3.6
+                                    ttc = sm_d / sm_spd
+                            final_distance = sm_d
+                            track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
+                        else:
+                            track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
+                        
+                        # Use simplified risk for animals (no ML model needed)
+                        if final_distance < 8:
+                            risk = "DANGER"
+                            risk_score = 0.7
+                        elif final_distance < 15:
+                            risk = "WARNING"
+                            risk_score = 0.4
+                        else:
+                            risk = "SAFE"
+                            risk_score = 0.1
+                    
+                    risk_color = {"DANGER": (0, 0, 255), "WARNING": (0, 165, 255), "SAFE": (0, 255, 0)}[risk]
+                    class_color = CLASS_COLORS.get(name.lower(), (153, 255, 153))
+                    
+                    animals.append({
+                        "name": name, "box": (x1, y1, x2, y2),
+                        "distance": final_distance, "speed": speed_kmh, "ttc": ttc,
+                        "class_color": class_color, "risk_color": risk_color, "risk": risk,
+                        "risk_score": risk_score, "type": "animal"
+                    })
+        except Exception as e:
+            print(f"[WARNING] Animal detection error: {e}")
+
     logger.log(frame_count, current_time, vehicles)
 
     if frame_count % 30 == 0 or frame_count == 1:
-        print(f"[frame {frame_count}] vehicles={len(vehicles)} "
+        print(f"[frame {frame_count}] vehicles={len(vehicles)} animals={len(animals)} "
               f"potholes={len(potholes)} humps={len(humps)}")
 
     # ---- 3D view ----
@@ -406,7 +481,7 @@ while True:
         canvas_3d = render_3d_view(
             vehicles, frame.shape, FOCAL_LENGTH, scene_3d,
             drivable_mask=drivable_mask, lane_mask=lane_mask,
-            potholes=potholes, humps=humps, signs=signs)
+            potholes=potholes, humps=humps, signs=signs, animals=animals)
 
         if SHOW_3D_WINDOW:
             cv2.imshow("3D View - Tesla Style", canvas_3d)
@@ -414,24 +489,34 @@ while True:
             writer_3d.write(canvas_3d)
 
     closest_vehicle = min(vehicles, key=lambda v: v["distance"], default=None)
-    risk_now        = closest_vehicle["risk"] if closest_vehicle else "SAFE"
+    closest_animal = min(animals, key=lambda a: a["distance"], default=None) if animals else None
+    
+    # Determine overall closest obstacle (vehicle or animal)
+    all_obstacles = []
+    if closest_vehicle:
+        all_obstacles.append(closest_vehicle)
+    if closest_animal:
+        all_obstacles.append(closest_animal)
+    
+    closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
+    risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
     alert.check(risk_now)
 
-    if closest_vehicle:
+    if closest_obstacle:
         dashboard.update(
-            closest_vehicle["distance"], closest_vehicle["speed"],
-            closest_vehicle["ttc"], closest_vehicle["risk"])
+            closest_obstacle["distance"], closest_obstacle["speed"],
+            closest_obstacle["ttc"], closest_obstacle["risk"])
 
     # ============================================================
     # ①  SMOOTH BRAKE PREDICTION (now speed- and ML-score-aware)
     # ============================================================
-    if closest_vehicle:
+    if closest_obstacle:
         brake_pct, brake_col = brake_pred.update(
-            closest_vehicle["distance"],
-            closest_vehicle["ttc"],
-            closest_vehicle["risk"],
-            speed_kmh=closest_vehicle["speed"],
-            risk_score=closest_vehicle.get("risk_score"))
+            closest_obstacle["distance"],
+            closest_obstacle["ttc"],
+            closest_obstacle["risk"],
+            speed_kmh=closest_obstacle["speed"],
+            risk_score=closest_obstacle.get("risk_score"))
     else:
         brake_pct, brake_col = brake_pred.update(
             999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
@@ -440,34 +525,51 @@ while True:
     web_reporter.log_brake(session_t, brake_pct)
 
     # ============================================================
-    # ②  DIRECTION PREDICTION
+    # ②  TRAJECTORY PLANNING (replaces simple direction arrow)
     # ============================================================
-    direction = dir_pred.predict(closest_vehicle, frame.shape, drivable_mask)
+    direction, trajectory_pts, is_safe = traj_planner.compute_safe_trajectory(
+        vehicles, animals, potholes, humps, frame.shape, drivable_mask)
+    
+    # Draw the real trajectory on frame
+    frame = traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
+    
+    # Also draw legacy direction arrow (smaller, secondary indicator)
+    frame = dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
 
     # ============================================================
     # ③  EVENT CAPTURE (for web gallery)
     # ============================================================
-    if risk_now == "DANGER" and closest_vehicle:
-        ttc_str = (f"{closest_vehicle['ttc']:.1f}s"
-                   if closest_vehicle["ttc"] != float("inf") else "--")
-        web_reporter.capture_event(frame, "DANGER", {
-            "dist":    f"{closest_vehicle['distance']:.1f} m",
+    if risk_now == "DANGER" and closest_obstacle:
+        ttc_str = (f"{closest_obstacle['ttc']:.1f}s"
+                   if closest_obstacle["ttc"] != float("inf") else "--")
+        event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
+        web_reporter.capture_event(frame, event_type, {
+            "dist":    f"{closest_obstacle['distance']:.1f} m",
             "ttc":     ttc_str,
-            "vehicle": closest_vehicle["name"],
-            "speed":   f"{closest_vehicle['speed']:.1f} km/h",
+            "vehicle": closest_obstacle["name"],
+            "speed":   f"{closest_obstacle['speed']:.1f} km/h",
         })
-    elif risk_now == "WARNING" and closest_vehicle:
-        web_reporter.capture_event(frame, "WARNING", {
-            "dist":    f"{closest_vehicle['distance']:.1f} m",
-            "vehicle": closest_vehicle["name"],
+    elif risk_now == "WARNING" and closest_obstacle:
+        event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "WARNING"
+        web_reporter.capture_event(frame, event_type, {
+            "dist":    f"{closest_obstacle['distance']:.1f} m",
+            "vehicle": closest_obstacle["name"],
         }, cooldown=3.0)
 
-    if brake_pct > 65 and closest_vehicle:
+    if brake_pct > 65 and closest_obstacle:
         web_reporter.capture_event(frame, "BRAKE", {
             "brake":  f"{brake_pct:.0f}%",
-            "dist":   f"{closest_vehicle['distance']:.1f} m",
-            "speed":  f"{closest_vehicle['speed']:.1f} km/h",
+            "dist":   f"{closest_obstacle['distance']:.1f} m",
+            "speed":  f"{closest_obstacle['speed']:.1f} km/h",
         })
+    
+    # Capture animal events separately
+    for animal in animals:
+        if animal["risk"] == "DANGER":
+            web_reporter.capture_event(frame, "ANIMAL", {
+                "dist": f"{animal['distance']:.1f} m",
+                "type": animal["name"],
+            }, cooldown=2.0)
 
     if potholes:
         (px1, py1, px2, py2) = potholes[0]
@@ -519,11 +621,6 @@ while True:
         frame = blend_mask(frame, drivable_mask, color=DRIVABLE_COLOR, alpha=0.28)
     if lane_mask is not None:
         frame = blend_mask(frame, lane_mask, color=LANE_COLOR, alpha=0.55)
-
-    # ============================================================
-    # ④  DIRECTION ARROW (drawn on drivable area, before overlays)
-    # ============================================================
-    frame = dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
 
     # ---- semi-transparent card backgrounds ----
     overlay = frame.copy()
@@ -627,9 +724,30 @@ while True:
         cv2.putText(frame, f"TTC  : {ttc_str}",
                     (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
 
+    # ---- Animal cards ----
+    for a in animals:
+        x1, y1, x2, y2 = a["box"]
+        card_y1 = max(0, y1 - card_h)
+        speed_str = f"{a['speed']:.1f} km/h" if a["speed"] > 0 else "-- km/h"
+        ttc_str   = f"{a['ttc']:.1f} s"       if a["ttc"] != float("inf") else "-- s"
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), a["class_color"], 2, cv2.LINE_AA)
+        cv2.rectangle(frame, (x1, card_y1), (x1 + 170, card_y1 + card_h),
+                      a["class_color"], 1, cv2.LINE_AA)
+        cv2.putText(frame, a["name"].upper() + " (ANIMAL)",
+                    (x1 + 8, card_y1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, a["class_color"], 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Risk : {a['risk']}",
+                    (x1 + 8, card_y1 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, a["risk_color"], 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Dist : {a['distance']:.1f} m",
+                    (x1 + 8, card_y1 + 49), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Speed: {speed_str}",
+                    (x1 + 8, card_y1 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"TTC  : {ttc_str}",
+                    (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
     # ---- Top-left HUD status panel ----
     cv2.rectangle(frame, (10, 10), (245, 165), (255, 255, 255), 1, cv2.LINE_AA)
-    total_objects = len(vehicles) + len(potholes) + len(humps) + len(signs)
+    total_objects = len(vehicles) + len(animals) + len(potholes) + len(humps) + len(signs)
     cv2.putText(frame, "ADAS STATUS", (25, 34),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(frame, f"Objects : {total_objects}", (25, 57),
@@ -641,13 +759,14 @@ while True:
     cv2.putText(frame, f"Drivable: {drv_status}", (25, 95),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.48, DRIVABLE_COLOR, 1, cv2.LINE_AA)
 
-    if closest_vehicle:
-        cv2.putText(frame, f"Closest : {closest_vehicle['name'].upper()}", (25, 116),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_vehicle["class_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Distance: {closest_vehicle['distance']:.1f} m", (25, 134),
+    if closest_obstacle:
+        obs_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else closest_obstacle["name"].upper()
+        cv2.putText(frame, f"Closest : {obs_type}", (25, 116),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["class_color"], 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Distance: {closest_obstacle['distance']:.1f} m", (25, 134),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Risk    : {closest_vehicle['risk']}", (25, 152),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_vehicle["risk_color"], 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Risk    : {closest_obstacle['risk']}", (25, 152),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["risk_color"], 2, cv2.LINE_AA)
     else:
         cv2.putText(frame, "Closest : None", (25, 116),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
