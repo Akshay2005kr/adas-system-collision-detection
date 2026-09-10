@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics - ADAS{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Analytics Dashboard</h1>
+    <p>Visualize detection data and safety metrics from sessions</p>
+</div>
+
+<div class="analytics-controls">
+    <label for="sessionSelect">Select Session:</label>
+    <select id="sessionSelect">
+        {% for session in sessions %}
+        <option value="{{ session.id }}">{{ session.id }} - {{ session.created }}</option>
+        {% else %}
+        <option value="">No sessions available</option>
+        {% endfor %}
+    </select>
+    <button id="loadAnalytics" class="btn btn-primary">Load Analytics</button>
+</div>
+
+<div id="analyticsContent" style="display: none;">
+    <div class="charts-grid">
+        <div class="chart-container">
+            <h3>Distance Over Time</h3>
+            <canvas id="distanceChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Speed Over Time</h3>
+            <canvas id="speedChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>TTC (Time to Collision)</h3>
+            <canvas id="ttcChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Risk Level</h3>
+            <canvas id="riskChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Brake Prediction</h3>
+            <canvas id="brakeChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Direction Changes</h3>
+            <canvas id="directionChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Object Detections</h3>
+            <canvas id="objectsChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <h3>Events Timeline</h3>
+            <canvas id="eventsChart"></canvas>
+        </div>
+    </div>
+    
+    <div class="analytics-summary">
+        <h2>Session Summary</h2>
+        <div class="summary-stats" id="summaryStats">
+            <!-- Populated dynamically -->
+        </div>
+    </div>
+</div>
+
+<div id="noDataMessage" class="info-message">
+    <p>Select a session and click "Load Analytics" to view the data.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let charts = {};
+
+document.getElementById('loadAnalytics').addEventListener('click', async () => {
+    const sessionId = document.getElementById('sessionSelect').value;
+    if (!sessionId) {
+        alert('Please select a session');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/analytics/data/${sessionId}`);
+        if (!response.ok) throw new Error('Failed to load data');
+        
+        const data = await response.json();
+        displayAnalytics(data);
+    } catch (error) {
+        alert('Error loading analytics: ' + error.message);
+    }
+});
+
+function displayAnalytics(data) {
+    document.getElementById('noDataMessage').style.display = 'none';
+    document.getElementById('analyticsContent').style.display = 'block';
+    
+    // Destroy existing charts
+    Object.values(charts).forEach(chart => chart.destroy());
+    charts = {};
+    
+    const labels = data.timestamps.map((_, i) => i);
+    
+    // Distance Chart
+    charts.distance = createChart('distanceChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'Distance (m)',
+            data: data.distances,
+            borderColor: '#3498db',
+            tension: 0.1
+        }]
+    });
+    
+    // Speed Chart
+    charts.speed = createChart('speedChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'Speed (km/h)',
+            data: data.speeds,
+            borderColor: '#2ecc71',
+            tension: 0.1
+        }]
+    });
+    
+    // TTC Chart
+    charts.ttc = createChart('ttcChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'TTC (s)',
+            data: data.ttcs,
+            borderColor: '#e74c3c',
+            tension: 0.1
+        }]
+    });
+    
+    // Risk Chart
+    charts.risk = createChart('riskChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'Risk Level',
+            data: data.risks,
+            borderColor: '#f39c12',
+            backgroundColor: 'rgba(243, 156, 18, 0.2)',
+            fill: true,
+            tension: 0.1
+        }]
+    });
+    
+    // Brake Chart
+    charts.brake = createChart('brakeChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'Brake %',
+            data: data.brake_pcts,
+            borderColor: '#9b59b6',
+            tension: 0.1
+        }]
+    });
+    
+    // Direction Chart
+    const directionMap = { 'LEFT': 0, 'STRAIGHT': 1, 'RIGHT': 2 };
+    charts.direction = createChart('directionChart', 'line', {
+        labels: labels,
+        datasets: [{
+            label: 'Direction',
+            data: data.directions.map(d => directionMap[d] || 1),
+            borderColor: '#1abc9c',
+            stepped: true
+        }]
+    });
+    
+    // Objects Chart
+    charts.objects = createChart('objectsChart', 'bar', {
+        labels: ['Vehicles', 'Animals', 'Potholes', 'Humps'],
+        datasets: [{
+            label: 'Total Detections',
+            data: [
+                data.vehicles.reduce((a, b) => a + b, 0),
+                data.animals.reduce((a, b) => a + b, 0),
+                data.potholes.reduce((a, b) => a + b, 0),
+                data.humps.reduce((a, b) => a + b, 0)
+            ],
+            backgroundColor: ['#3498db', '#e67e22', '#95a5a6', '#f1c40f']
+        }]
+    });
+    
+    // Events Chart
+    charts.events = createChart('eventsChart', 'bar', {
+        labels: labels,
+        datasets: [
+            {
+                label: 'Danger Events',
+                data: data.danger_events,
+                backgroundColor: 'rgba(231, 76, 60, 0.6)'
+            },
+            {
+                label: 'Warning Events',
+                data: data.warning_events,
+                backgroundColor: 'rgba(241, 196, 15, 0.6)'
+            }
+        ]
+    });
+    
+    // Update summary
+    updateSummary(data);
+}
+
+function createChart(canvasId, type, chartData) {
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    return new Chart(ctx, {
+        type: type,
+        data: chartData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+
+function updateSummary(data) {
+    const summary = document.getElementById('summaryStats');
+    const totalFrames = data.timestamps.length;
+    const dangerCount = data.danger_events.length;
+    const warningCount = data.warning_events.length;
+    
+    summary.innerHTML = `
+        <div class="summary-item">
+            <span class="summary-label">Total Frames:</span>
+            <span class="summary-value">${totalFrames}</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">Danger Events:</span>
+            <span class="summary-value danger">${dangerCount}</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">Warning Events:</span>
+            <span class="summary-value warning">${warningCount}</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">Avg Risk:</span>
+            <span class="summary-value">${(data.risks.reduce((a, b) => a + b, 0) / (data.risks.length || 1)).toFixed(2)}</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">Min Distance:</span>
+            <span class="summary-value">${Math.min(...data.distances.filter(d => d > 0)).toFixed(1)}m</span>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label">Min TTC:</span>
+            <span class="summary-value">${Math.min(...data.ttcs.filter(t => t > 0)).toFixed(1)}s</span>
+        </div>
+    `;
+}
+</script>
+{% endblock %}

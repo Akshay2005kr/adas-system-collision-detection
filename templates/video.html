@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Video Processing - ADAS{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Video Processing</h1>
+    <p>Upload and process video files with ADAS detection</p>
+</div>
+
+<div class="video-upload-section">
+    <div class="upload-area" id="dropZone">
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" name="video" id="videoFile" accept="video/*" required>
+            <label for="videoFile" class="upload-label">
+                <div class="upload-icon">📹</div>
+                <div class="upload-text">Drop video file here or click to browse</div>
+                <div class="upload-hint">Supports MP4, AVI, MOV (Max 500MB)</div>
+            </label>
+        </form>
+    </div>
+    
+    <div class="processing-status" id="processingStatus" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processing video...</p>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+    </div>
+    
+    <div class="result-section" id="resultSection" style="display: none;">
+        <h3>Processing Complete</h3>
+        <div id="resultMessage"></div>
+        <button onclick="document.getElementById('resultSection').style.display='none'" class="btn btn-secondary">Close</button>
+    </div>
+</div>
+
+<div class="video-info">
+    <h2>How It Works</h2>
+    <ul>
+        <li>Upload a video file from your device</li>
+        <li>The ADAS system will detect vehicles, animals, potholes, and speed humps</li>
+        <li>Real-time collision risk assessment and trajectory guidance</li>
+        <li>Generate detailed reports with analytics</li>
+    </ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const uploadForm = document.getElementById('uploadForm');
+const videoFile = document.getElementById('videoFile');
+const processingStatus = document.getElementById('processingStatus');
+const resultSection = document.getElementById('resultSection');
+const resultMessage = document.getElementById('resultMessage');
+
+uploadForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const formData = new FormData();
+    formData.append('video', videoFile.files[0]);
+    
+    processingStatus.style.display = 'block';
+    resultSection.style.display = 'none';
+    
+    try {
+        const response = await fetch('/video', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            resultMessage.innerHTML = `
+                <div class="alert alert-success">
+                    <strong>Success!</strong> Video processed successfully.<br>
+                    Output: ${data.output_path}
+                </div>
+            `;
+        } else {
+            resultMessage.innerHTML = `
+                <div class="alert alert-error">
+                    <strong>Error:</strong> ${data.error || 'Processing failed'}
+                </div>
+            `;
+        }
+    } catch (error) {
+        resultMessage.innerHTML = `
+            <div class="alert alert-error">
+                <strong>Error:</strong> ${error.message}
+            </div>
+        `;
+    } finally {
+        processingStatus.style.display = 'none';
+        resultSection.style.display = 'block';
+    }
+});
+</script>
+{% endblock %}

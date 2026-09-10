@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - ADAS{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <h1>ADAS Dashboard</h1>
+    <div class="system-status {% if stats.risk == 'LOW' %}status-ok{% elif stats.risk == 'MEDIUM' %}status-warning{% else %}status-danger{% endif %}">
+        <span class="status-indicator"></span>
+        System Status: {{ stats.risk }}
+    </div>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">🚗</div>
+        <div class="stat-value">{{ stats.vehicles }}</div>
+        <div class="stat-label">Vehicles Detected</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">🦌</div>
+        <div class="stat-value">{{ stats.animals }}</div>
+        <div class="stat-label">Animals Detected</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">🕳️</div>
+        <div class="stat-value">{{ stats.potholes }}</div>
+        <div class="stat-label">Potholes Detected</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value">{{ stats.humps }}</div>
+        <div class="stat-label">Speed Humps</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">📏</div>
+        <div class="stat-value">{{ stats.distance }}</div>
+        <div class="stat-label">Min Distance (m)</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">⏱️</div>
+        <div class="stat-value">{{ stats.ttc }}</div>
+        <div class="stat-label">TTC (s)</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">🧭</div>
+        <div class="stat-value">{{ stats.direction }}</div>
+        <div class="stat-label">Direction</div>
+    </div>
+    
+    <div class="stat-card">
+        <div class="stat-icon">🛑</div>
+        <div class="stat-value">{{ stats.brake_pct }}%</div>
+        <div class="stat-label">Brake Prediction</div>
+    </div>
+</div>
+
+<div class="recent-sessions">
+    <h2>Recent Sessions</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Session ID</th>
+                <th>Created</th>
+                <th>Size</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for session in sessions %}
+            <tr>
+                <td>{{ session.id }}</td>
+                <td>{{ session.created }}</td>
+                <td>{{ (session.size / 1024)|round(2) }} KB</td>
+                <td>
+                    <a href="{{ url_for('report_detail', session_id=session.id) }}" class="btn btn-sm">View Report</a>
+                    <a href="{{ url_for('download_csv', session_id=session.id) }}" class="btn btn-sm btn-secondary">Download CSV</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4">No sessions found. Start processing video or camera feed.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="quick-actions">
+    <h2>Quick Actions</h2>
+    <div class="action-buttons">
+        <a href="{{ url_for('video') }}" class="btn btn-primary">Process Video</a>
+        <a href="{{ url_for('camera') }}" class="btn btn-success">Start Camera</a>
+        <a href="{{ url_for('analytics') }}" class="btn btn-info">View Analytics</a>
+        <a href="{{ url_for('reports') }}" class="btn btn-warning">View Reports</a>
+    </div>
+</div>
+{% endblock %}

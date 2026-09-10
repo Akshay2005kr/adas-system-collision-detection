@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Live Camera - ADAS{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Live Camera ADAS</h1>
+    <p>Real-time collision detection using your webcam</p>
+</div>
+
+<div class="camera-section">
+    <div class="camera-controls">
+        <button id="startCamera" class="btn btn-success">Start Camera</button>
+        <button id="stopCamera" class="btn btn-danger" disabled>Stop Camera</button>
+    </div>
+    
+    <div class="camera-display">
+        <div class="video-container">
+            <img id="cameraFeed" src="" alt="Camera feed will appear here" style="display: none;">
+            <div id="cameraPlaceholder" class="camera-placeholder">
+                <div class="placeholder-icon">📷</div>
+                <p>Click "Start Camera" to begin live detection</p>
+            </div>
+        </div>
+        
+        <div class="live-stats" id="liveStats" style="display: none;">
+            <h3>Live Detection Stats</h3>
+            <div class="stats-grid-small">
+                <div class="stat-item">
+                    <span class="stat-label">Vehicles:</span>
+                    <span class="stat-value" id="statVehicles">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Animals:</span>
+                    <span class="stat-value" id="statAnimals">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Potholes:</span>
+                    <span class="stat-value" id="statPotholes">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Humps:</span>
+                    <span class="stat-value" id="statHumps">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Risk:</span>
+                    <span class="stat-value" id="statRisk">LOW</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Distance:</span>
+                    <span class="stat-value" id="statDistance">0m</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">TTC:</span>
+                    <span class="stat-value" id="statTTC">0s</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Brake:</span>
+                    <span class="stat-value" id="statBrake">0%</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Direction:</span>
+                    <span class="stat-value" id="statDirection">STRAIGHT</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="camera-info">
+    <h2>Features</h2>
+    <ul>
+        <li>Real-time vehicle and animal detection</li>
+        <li>Pothole and speed hump identification</li>
+        <li>Collision risk assessment with TTC calculation</li>
+        <li>Trajectory guidance visualization</li>
+        <li>Automatic session logging for reports</li>
+    </ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let cameraActive = false;
+let statusInterval = null;
+
+const startBtn = document.getElementById('startCamera');
+const stopBtn = document.getElementById('stopCamera');
+const cameraFeed = document.getElementById('cameraFeed');
+const cameraPlaceholder = document.getElementById('cameraPlaceholder');
+const liveStats = document.getElementById('liveStats');
+
+startBtn.addEventListener('click', async () => {
+    try {
+        const response = await fetch('/camera/start', { method: 'POST' });
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            cameraActive = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            cameraFeed.style.display = 'block';
+            cameraFeed.src = '/camera/feed';
+            cameraPlaceholder.style.display = 'none';
+            liveStats.style.display = 'block';
+            
+            // Start polling for stats
+            statusInterval = setInterval(updateStats, 500);
+        } else {
+            alert('Failed to start camera: ' + (data.error || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Error starting camera: ' + error.message);
+    }
+});
+
+stopBtn.addEventListener('click', async () => {
+    try {
+        const response = await fetch('/camera/stop', { method: 'POST' });
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            cameraActive = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            cameraFeed.src = '';
+            cameraFeed.style.display = 'none';
+            cameraPlaceholder.style.display = 'block';
+            liveStats.style.display = 'none';
+            
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+    } catch (error) {
+        console.error('Error stopping camera:', error);
+    }
+});
+
+async function updateStats() {
+    try {
+        const response = await fetch('/camera/status');
+        const data = await response.json();
+        
+        if (data.active) {
+            document.getElementById('statVehicles').textContent = data.vehicles || 0;
+            document.getElementById('statAnimals').textContent = data.animals || 0;
+            document.getElementById('statPotholes').textContent = data.potholes || 0;
+            document.getElementById('statHumps').textContent = data.humps || 0;
+            document.getElementById('statRisk').textContent = data.risk || 'LOW';
+            document.getElementById('statDistance').textContent = (data.distance || 0).toFixed(1) + 'm';
+            document.getElementById('statTTC').textContent = (data.ttc || 0).toFixed(1) + 's';
+            document.getElementById('statBrake').textContent = (data.brake_pct || 0).toFixed(0) + '%';
+            document.getElementById('statDirection').textContent = data.direction || 'STRAIGHT';
+            
+            // Update risk color
+            const riskEl = document.getElementById('statRisk');
+            riskEl.className = 'stat-value';
+            if (data.risk === 'HIGH') riskEl.classList.add('risk-high');
+            else if (data.risk === 'MEDIUM') riskEl.classList.add('risk-medium');
+            else riskEl.classList.add('risk-low');
+        }
+    } catch (error) {
+        console.error('Error updating stats:', error);
+    }
+}
+</script>
+{% endblock %}
