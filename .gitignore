@@ -1,1 +1,1 @@
-Nothing should be ignored based on the provided file changes. The only modified file is a Python source file (`adas_full_pipeline.py`), which should not be added to .gitignore.
+Nothing should be ignored since the changes only include Python source files (.py) and the existing .gitignore is empty.
