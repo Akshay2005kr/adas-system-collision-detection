@@ -62,34 +62,6 @@ LANE_MODEL_PATH     = "modals/linerodebest.pt"
 DRIVABLE_MODEL_PATH = "bdd100k_40k_yolov8n_seg_results/weights/best.pt"
 ANIMAL_MODEL_PATH   = "modals/animal_best.pt"
 
-model          = YOLO(MAIN_MODEL_PATH)
-pothole_model  = YOLO(POTHOLE_MODEL_PATH)
-hump_model     = YOLO(HUMP_MODEL_PATH)
-lane_model     = YOLO(LANE_MODEL_PATH)
-drivable_model = YOLO(DRIVABLE_MODEL_PATH)
-
-# Load animal model with graceful fallback
-try:
-    animal_model = YOLO(ANIMAL_MODEL_PATH)
-    print(f"[animal model]     {animal_model.names}")
-except Exception as e:
-    animal_model = None
-    print(f"[WARNING] Animal model not loaded: {e}. Continuing without animal detection.")
-
-collision_model = CollisionModel("modals/best_model.pkl")
-dashboard       = LiveDashboard()
-logger          = DataLogger("logs/session_log.csv")
-alert           = AlertSystem()
-
-# --- smooth-brake / direction / report / trajectory instances ---
-brake_pred   = BrakePredictor(alpha_rise=0.18, alpha_fall=0.25)
-dir_pred     = DirectionPredictor(alpha=0.22)
-web_reporter = WebReportGenerator("reports")
-traj_planner = TrajectoryPlanner(alpha=0.25)
-
-print("[main model]     ", model.names)
-print("[lane model]     ", lane_model.names)
-print("[drivable model] ", drivable_model.names)
 
 # ============================================================
 # 2.  CONFIDENCE / IOU THRESHOLDS
@@ -162,7 +134,7 @@ class ADASPipeline:
         
         try:
             self.animal_model = YOLO(ANIMAL_MODEL_PATH)
-            print(f"[animal model]     {self.animal_model.names}")
+            print(f"[animal model]     {self.pipeline.animal_model.names if pipeline.animal_model else None}")
         except Exception as e:
             self.animal_model = None
             print(f"[WARNING] Animal model not loaded: {e}. Continuing without animal detection.")
@@ -313,7 +285,7 @@ class ADASPipeline:
                 for r in animal_results:
                     for box in r.boxes:
                         cls = int(box.cls[0])
-                        name = self.animal_model.names[cls] if self.animal_model.names else f"animal_{cls}"
+                        name = self.pipeline.animal_model.names if pipeline.animal_model else None[cls] if self.pipeline.animal_model.names if pipeline.animal_model else None else f"animal_{cls}"
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         
                         animal_width = ANIMAL_WIDTHS.get(name.lower(), DEFAULT_ANIMAL_WIDTH)
@@ -364,7 +336,7 @@ class ADASPipeline:
             except Exception as e:
                 print(f"[WARNING] Animal detection error: {e}")
         
-        self.logger.log(self.frame_count, current_time, vehicles)
+        self.pipeline.logger.log(self.frame_count, current_time, vehicles)
         
         # Find closest obstacles
         closest_vehicle = min(vehicles, key=lambda v: v["distance"], default=None)
@@ -378,40 +350,40 @@ class ADASPipeline:
         
         closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
         risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
-        self.alert.check(risk_now)
+        self.pipeline.alert.check(risk_now)
         
         if closest_obstacle and self.dashboard:
-            self.dashboard.update(
+            self.pipeline.dashboard.update(
                 closest_obstacle["distance"], closest_obstacle["speed"],
                 closest_obstacle["ttc"], closest_obstacle["risk"])
         
         # Brake prediction
         if closest_obstacle:
-            brake_pct, brake_col = self.brake_pred.update(
+            brake_pct, brake_col = self.pipeline.brake_pred.update(
                 closest_obstacle["distance"],
                 closest_obstacle["ttc"],
                 closest_obstacle["risk"],
                 speed_kmh=closest_obstacle["speed"],
                 risk_score=closest_obstacle.get("risk_score"))
         else:
-            brake_pct, brake_col = self.brake_pred.update(
+            brake_pct, brake_col = self.pipeline.brake_pred.update(
                 999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
         
-        self.web_reporter.log_brake(session_t, brake_pct)
+        self.pipeline.web_reporter.log_brake(session_t, brake_pct)
         
         # Trajectory planning
-        direction, trajectory_pts, is_safe = self.traj_planner.compute_safe_trajectory(
+        direction, trajectory_pts, is_safe = self.pipeline.traj_planner.compute_safe_trajectory(
             vehicles, animals, potholes, humps, frame.shape, drivable_mask)
         
         # Draw trajectory
-        frame = self.traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
-        frame = self.dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
+        frame = self.pipeline.traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
+        frame = self.pipeline.dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
         
         # Event capture
         if risk_now == "DANGER" and closest_obstacle:
             ttc_str = f"{closest_obstacle['ttc']:.1f}s" if closest_obstacle["ttc"] != float("inf") else "--"
             event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
-            self.web_reporter.capture_event(frame, event_type, {
+            self.pipeline.web_reporter.capture_event(frame, event_type, {
                 "dist": f"{closest_obstacle['distance']:.1f} m",
                 "ttc": ttc_str,
                 "vehicle": closest_obstacle["name"],
@@ -535,15 +507,6 @@ class SmoothDetector:
         return [t['box'] for t in self.tracks]
 
 
-pothole_tracker = SmoothDetector(max_age=6, iou_thresh=0.35)
-hump_tracker    = SmoothDetector(max_age=6, iou_thresh=0.35)
-
-last_drivable_mask = None
-last_lane_mask     = None
-track_history       = {}
-risk_score_history  = {}   # NEW: per-track EMA of the ML model's continuous risk score
-
-
 def _label_from_score(score: float) -> str:
     """Derive the discrete SAFE/WARNING/DANGER label from the SMOOTHED
     continuous risk score, instead of re-predicting the discrete label
@@ -562,6 +525,9 @@ def _label_from_score(score: float) -> str:
 # ============================================================
 def run_desktop_mode():
     """Run the desktop ADAS application with OpenCV windows."""
+    # Create pipeline instance with display enabled
+    pipeline = ADASPipeline(display=True, save_3d=True, tesla_mode=TESLA_MODE)
+    
     VIDEO_SOURCE = "pothole.mp4"       # >>> change to your file / 0 for webcam <<<
     cap = cv2.VideoCapture(VIDEO_SOURCE)
     frame_count = 0
@@ -569,7 +535,6 @@ def run_desktop_mode():
     SHOW_3D_WINDOW    = True
     SAVE_3D_VIDEO     = True
     THREED_OUTPUT_PATH = "reports/3d_view.mp4"
-    scene_3d  = None
     writer_3d = None
 
     source_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -594,7 +559,7 @@ def run_desktop_mode():
         session_t      = current_time - session_start   # seconds since start
 
         # ---- run all five models ----
-        results = model.track(frame, persist=True, conf=0.35, iou=0.45,
+        results = pipeline.model.track(frame, persist=True, conf=0.35, iou=0.45,
                                tracker="bytetrack.yaml", verbose=False)
 
         run_det = (frame_count % DETECT_EVERY_N == 0)
@@ -609,13 +574,13 @@ def run_desktop_mode():
                 for box in r.boxes:
                     raw_humps.append(tuple(map(float, box.xyxy[0])))
 
-        potholes = pothole_tracker.update(raw_potholes)
-        humps    = hump_tracker.update(raw_humps)
+        potholes = pipeline.pothole_tracker.update(raw_potholes)
+        humps    = pipeline.hump_tracker.update(raw_humps)
 
         if run_seg:
-            drivable_results   = drivable_model(frame, conf=DRIVABLE_CONF, verbose=False)
+            drivable_results   = pipeline.drivable_model(frame, conf=DRIVABLE_CONF, verbose=False)
             last_drivable_mask = build_mask(drivable_results, frame.shape)
-            lane_results       = lane_model(frame, conf=LANE_CONF, verbose=False)
+            lane_results       = pipeline.lane_model(frame, conf=LANE_CONF, verbose=False)
             last_lane_mask     = build_mask(lane_results, frame.shape)
 
         drivable_mask = last_drivable_mask
@@ -629,7 +594,7 @@ def run_desktop_mode():
         for r in results:
             for box in r.boxes:
                 cls  = int(box.cls[0])
-                name = model.names[cls]
+                name = pipeline.model.names[cls]
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
 
                 if name in ("pothole", "hump", "lane", "drivable area"):
@@ -651,8 +616,8 @@ def run_desktop_mode():
 
             if box.id is not None:
                 track_id = int(box.id[0])
-                if track_id in track_history:
-                    prev   = track_history[track_id]
+                if track_id in pipeline.track_history:
+                    prev   = pipeline.track_history[track_id]
                     sm_d   = prev["dist"] * 0.8 + raw_distance * 0.2
                     dt     = current_time - prev["time"]
                     sm_spd = 0.0
@@ -663,18 +628,18 @@ def run_desktop_mode():
                             speed_kmh = sm_spd * 3.6
                             ttc       = sm_d / sm_spd
                     final_distance = sm_d
-                    track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
+                    pipeline.track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
                 else:
-                    track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
+                    pipeline.track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
 
                 features = extract_features(
                     track_id, (x1, y1, x2, y2), frame.shape, final_distance, current_time)
 
                 # ---- NEW: continuous ML risk score, smoothed per-track ----
-                raw_score  = collision_model.predict_proba(features[0])
-                prev_score = risk_score_history.get(track_id, raw_score)
+                raw_score  = pipeline.collision_model.predict_proba(features[0])
+                prev_score = pipeline.risk_score_history.get(track_id, raw_score)
                 risk_score = 0.35 * raw_score + 0.65 * prev_score
-                risk_score_history[track_id] = risk_score
+                pipeline.risk_score_history[track_id] = risk_score
                 risk = _label_from_score(risk_score)
 
             if final_distance > 12:
@@ -701,7 +666,7 @@ def run_desktop_mode():
             for r in animal_results:
                 for box in r.boxes:
                     cls = int(box.cls[0])
-                    name = animal_model.names[cls] if animal_model.names else f"animal_{cls}"
+                    name = pipeline.animal_model.names if pipeline.animal_model else None[cls] if pipeline.animal_model.names if pipeline.animal_model else None else f"animal_{cls}"
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     
                     # Get animal width from mapping or use default
@@ -716,8 +681,8 @@ def run_desktop_mode():
                     
                     if box.id is not None:
                         track_id = int(box.id[0])
-                        if track_id in track_history:
-                            prev = track_history[track_id]
+                        if track_id in pipeline.track_history:
+                            prev = pipeline.track_history[track_id]
                             sm_d = prev["dist"] * 0.8 + raw_distance * 0.2
                             dt = current_time - prev["time"]
                             sm_spd = 0.0
@@ -728,9 +693,9 @@ def run_desktop_mode():
                                     speed_kmh = sm_spd * 3.6
                                     ttc = sm_d / sm_spd
                             final_distance = sm_d
-                            track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
+                            pipeline.track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
                         else:
-                            track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
+                            pipeline.track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
                         
                         # Use simplified risk for animals (no ML model needed)
                         if final_distance < 8:
@@ -755,7 +720,7 @@ def run_desktop_mode():
         except Exception as e:
             print(f"[WARNING] Animal detection error: {e}")
 
-    logger.log(frame_count, current_time, vehicles)
+    pipeline.logger.log(frame_count, current_time, vehicles)
 
     if frame_count % 30 == 0 or frame_count == 1:
         print(f"[frame {frame_count}] vehicles={len(vehicles)} animals={len(animals)} "
@@ -763,8 +728,8 @@ def run_desktop_mode():
 
     # ---- 3D view ----
     if SHOW_3D_WINDOW or SAVE_3D_VIDEO:
-        if scene_3d is None:
-            scene_3d = Scene3D(frame.shape, FOCAL_LENGTH)
+        if pipeline.scene_3d is None:
+            pipeline.scene_3d = Scene3D(frame.shape, FOCAL_LENGTH)
             if SAVE_3D_VIDEO:
                 out_dir_3d = os.path.dirname(THREED_OUTPUT_PATH)
                 if out_dir_3d:
@@ -775,7 +740,7 @@ def run_desktop_mode():
                     (frame.shape[1], frame.shape[0]))
 
         canvas_3d = render_3d_view(
-            vehicles, frame.shape, FOCAL_LENGTH, scene_3d,
+            vehicles, frame.shape, FOCAL_LENGTH, pipeline.scene_3d,
             drivable_mask=drivable_mask, lane_mask=lane_mask,
             potholes=potholes, humps=humps, signs=signs, animals=animals)
 
@@ -796,10 +761,10 @@ def run_desktop_mode():
     
     closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
     risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
-    alert.check(risk_now)
+    pipeline.alert.check(risk_now)
 
     if closest_obstacle:
-        dashboard.update(
+        pipeline.dashboard.update(
             closest_obstacle["distance"], closest_obstacle["speed"],
             closest_obstacle["ttc"], closest_obstacle["risk"])
 
@@ -807,30 +772,30 @@ def run_desktop_mode():
     # ①  SMOOTH BRAKE PREDICTION (now speed- and ML-score-aware)
     # ============================================================
     if closest_obstacle:
-        brake_pct, brake_col = brake_pred.update(
+        brake_pct, brake_col = pipeline.brake_pred.update(
             closest_obstacle["distance"],
             closest_obstacle["ttc"],
             closest_obstacle["risk"],
             speed_kmh=closest_obstacle["speed"],
             risk_score=closest_obstacle.get("risk_score"))
     else:
-        brake_pct, brake_col = brake_pred.update(
+        brake_pct, brake_col = pipeline.brake_pred.update(
             999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
 
     # Log brake history for the web report chart
-    web_reporter.log_brake(session_t, brake_pct)
+    pipeline.web_reporter.log_brake(session_t, brake_pct)
 
     # ============================================================
     # ②  TRAJECTORY PLANNING (replaces simple direction arrow)
     # ============================================================
-    direction, trajectory_pts, is_safe = traj_planner.compute_safe_trajectory(
+    direction, trajectory_pts, is_safe = pipeline.traj_planner.compute_safe_trajectory(
         vehicles, animals, potholes, humps, frame.shape, drivable_mask)
     
     # Draw the real trajectory on frame
-    frame = traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
+    frame = pipeline.traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
     
     # Also draw legacy direction arrow (smaller, secondary indicator)
-    frame = dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
+    frame = pipeline.dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
 
     # ============================================================
     # ③  EVENT CAPTURE (for web gallery)
@@ -839,7 +804,7 @@ def run_desktop_mode():
         ttc_str = (f"{closest_obstacle['ttc']:.1f}s"
                    if closest_obstacle["ttc"] != float("inf") else "--")
         event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
-        web_reporter.capture_event(frame, event_type, {
+        pipeline.web_reporter.capture_event(frame, event_type, {
             "dist":    f"{closest_obstacle['distance']:.1f} m",
             "ttc":     ttc_str,
             "vehicle": closest_obstacle["name"],
@@ -847,13 +812,13 @@ def run_desktop_mode():
         })
     elif risk_now == "WARNING" and closest_obstacle:
         event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "WARNING"
-        web_reporter.capture_event(frame, event_type, {
+        pipeline.web_reporter.capture_event(frame, event_type, {
             "dist":    f"{closest_obstacle['distance']:.1f} m",
             "vehicle": closest_obstacle["name"],
         }, cooldown=3.0)
 
     if brake_pct > 65 and closest_obstacle:
-        web_reporter.capture_event(frame, "BRAKE", {
+        pipeline.web_reporter.capture_event(frame, "BRAKE", {
             "brake":  f"{brake_pct:.0f}%",
             "dist":   f"{closest_obstacle['distance']:.1f} m",
             "speed":  f"{closest_obstacle['speed']:.1f} km/h",
@@ -862,7 +827,7 @@ def run_desktop_mode():
     # Capture animal events separately
     for animal in animals:
         if animal["risk"] == "DANGER":
-            web_reporter.capture_event(frame, "ANIMAL", {
+            pipeline.web_reporter.capture_event(frame, "ANIMAL", {
                 "dist": f"{animal['distance']:.1f} m",
                 "type": animal["name"],
             }, cooldown=2.0)
@@ -876,7 +841,7 @@ def run_desktop_mode():
             size_str = f"{w_cm}x{h_cm} cm"
         else:
             dist_str, size_str = "--", "--"
-        web_reporter.capture_event(frame, "POTHOLE", {
+        pipeline.web_reporter.capture_event(frame, "POTHOLE", {
             "dist": dist_str,
             "size": size_str,
         }, cooldown=5.0)
@@ -890,7 +855,7 @@ def run_desktop_mode():
             size_str = f"{w_cm}x{h_cm} cm"
         else:
             dist_str, size_str = "--", "--"
-        web_reporter.capture_event(frame, "HUMP", {
+        pipeline.web_reporter.capture_event(frame, "HUMP", {
             "dist": dist_str,
             "size": size_str,
         }, cooldown=5.0)
@@ -1093,7 +1058,7 @@ def run_desktop_mode():
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, dir_col, 2, cv2.LINE_AA)
 
     # ---- DANGER flash overlay ----
-    frame = alert.draw_flash(frame, risk_now)
+    frame = pipeline.alert.draw_flash(frame, risk_now)
 
     window_title = ("ADAS - Full Pipeline [TESLA MODE]"
                     if TESLA_MODE else "ADAS - Full Pipeline [NORMAL COLOR]")
@@ -1110,8 +1075,8 @@ if writer_3d is not None:
     writer_3d.release()
     print(f"[main] 3D view saved → {THREED_OUTPUT_PATH}")
 cv2.destroyAllWindows()
-dashboard.close()
-logger.close()
+pipeline.dashboard.close()
+pipeline.logger.close()
 
 # Generate the interactive HTML web report
 session_label = time.strftime("Run %Y-%m-%d %H:%M")
