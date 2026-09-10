@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - ADAS{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Session Reports</h1>
+    <p>View and download generated ADAS reports</p>
+</div>
+
+<div class="reports-section">
+    {% if sessions %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Session ID</th>
+                <th>Date/Time</th>
+                <th>File Size</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for session in sessions %}
+            <tr>
+                <td><code>{{ session.id }}</code></td>
+                <td>{{ session.created }}</td>
+                <td>{{ (session.size / 1024)|round(2) }} KB</td>
+                <td class="actions">
+                    <a href="{{ url_for('report_detail', session_id=session.id) }}" class="btn btn-sm btn-primary">
+                        👁️ View Report
+                    </a>
+                    <a href="{{ url_for('download_csv', session_id=session.id) }}" class="btn btn-sm btn-secondary">
+                        📥 Download CSV
+                    </a>
+                    <a href="{{ url_for('download_report', session_id=session.id) }}" class="btn btn-sm btn-success">
+                        📄 Download HTML
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon">📋</div>
+        <h3>No Reports Available</h3>
+        <p>Process a video or use the camera to generate session reports.</p>
+        <div class="empty-actions">
+            <a href="{{ url_for('video') }}" class="btn btn-primary">Process Video</a>
+            <a href="{{ url_for('camera') }}" class="btn btn-success">Start Camera</a>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

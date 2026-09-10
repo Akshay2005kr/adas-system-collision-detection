@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+
+{% block title %}Report: {{ session_id }} - ADAS{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Detailed Report: {{ session_id }}</h1>
+    <a href="{{ url_for('reports') }}" class="btn btn-secondary">← Back to Reports</a>
+</div>
+
+<div class="report-section">
+    <h2>Session Summary</h2>
+    <div class="summary-grid">
+        <div class="summary-card">
+            <span class="summary-label">Duration</span>
+            <span class="summary-value">{{ summary.duration }} frames</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">FPS</span>
+            <span class="summary-value">{{ summary.fps }}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Total Vehicles</span>
+            <span class="summary-value">{{ summary.total_vehicles }}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Total Animals</span>
+            <span class="summary-value">{{ summary.total_animals }}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Potholes</span>
+            <span class="summary-value">{{ summary.total_potholes }}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Speed Humps</span>
+            <span class="summary-value">{{ summary.total_humps }}</span>
+        </div>
+        <div class="summary-card danger">
+            <span class="summary-label">Danger Events</span>
+            <span class="summary-value">{{ summary.danger_events }}</span>
+        </div>
+        <div class="summary-card warning">
+            <span class="summary-label">Warning Events</span>
+            <span class="summary-value">{{ summary.warning_events }}</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Min Distance</span>
+            <span class="summary-value">{{ "%.2f"|format(summary.min_distance) if summary.min_distance else 'N/A' }} m</span>
+        </div>
+        <div class="summary-card">
+            <span class="summary-label">Min TTC</span>
+            <span class="summary-value">{{ "%.2f"|format(summary.min_ttc) if summary.min_ttc else 'N/A' }} s</span>
+        </div>
+    </div>
+</div>
+
+<div class="report-section">
+    <h2>Analytics Graphs</h2>
+    <div class="charts-grid">
+        <div class="chart-container-full">
+            <h3>Distance & Speed Over Time</h3>
+            <canvas id="distanceSpeedChart"></canvas>
+        </div>
+        
+        <div class="chart-container-full">
+            <h3>TTC & Risk Level</h3>
+            <canvas id="ttcRiskChart"></canvas>
+        </div>
+        
+        <div class="chart-container-full">
+            <h3>Brake Prediction</h3>
+            <canvas id="brakeChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="report-section">
+    <h2>Event Timeline</h2>
+    <div class="timeline" id="eventTimeline">
+        <!-- Populated dynamically -->
+    </div>
+</div>
+
+<div class="report-section">
+    <h2>Download Options</h2>
+    <div class="download-buttons">
+        <a href="{{ url_for('download_csv', session_id=session_id) }}" class="btn btn-primary">
+            📥 Download CSV
+        </a>
+        <a href="{{ url_for('download_report', session_id=session_id) }}" class="btn btn-success">
+            📄 Download HTML Report
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const data = {{ data | tojson }};
+const summary = {{ summary | tojson }};
+
+// Distance & Speed Chart
+new Chart(document.getElementById('distanceSpeedChart').getContext('2d'), {
+    type: 'line',
+    data: {
+        labels: data.timestamps.map((_, i) => i),
+        datasets: [
+            {
+                label: 'Distance (m)',
+                data: data.distances,
+                borderColor: '#3498db',
+                yAxisID: 'y'
+            },
+            {
+                label: 'Speed (km/h)',
+                data: data.speeds,
+                borderColor: '#2ecc71',
+                yAxisID: 'y1'
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        interaction: {
+            mode: 'index',
+            intersect: false
+        },
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: { display: true, text: 'Distance (m)' }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                grid: { drawOnChartArea: false },
+                title: { display: true, text: 'Speed (km/h)' }
+            }
+        }
+    }
+});
+
+// TTC & Risk Chart
+new Chart(document.getElementById('ttcRiskChart').getContext('2d'), {
+    type: 'line',
+    data: {
+        labels: data.timestamps.map((_, i) => i),
+        datasets: [
+            {
+                label: 'TTC (s)',
+                data: data.ttcs,
+                borderColor: '#e74c3c',
+                yAxisID: 'y'
+            },
+            {
+                label: 'Risk Level',
+                data: data.risks,
+                borderColor: '#f39c12',
+                backgroundColor: 'rgba(243, 156, 18, 0.2)',
+                fill: true,
+                yAxisID: 'y1'
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: { display: true, text: 'TTC (s)' }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                min: 0,
+                max: 1,
+                grid: { drawOnChartArea: false },
+                title: { display: true, text: 'Risk (0-1)' }
+            }
+        }
+    }
+});
+
+// Brake Chart
+new Chart(document.getElementById('brakeChart').getContext('2d'), {
+    type: 'line',
+    data: {
+        labels: data.timestamps.map((_, i) => i),
+        datasets: [{
+            label: 'Brake %',
+            data: data.brake_pcts,
+            borderColor: '#9b59b6',
+            backgroundColor: 'rgba(155, 89, 182, 0.2)',
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        scales: {
+            y: {
+                beginAtZero: true,
+                max: 100,
+                title: { display: true, text: 'Brake Percentage (%)' }
+            }
+        }
+    }
+});
+
+// Event Timeline
+function buildTimeline() {
+    const timeline = document.getElementById('eventTimeline');
+    const events = [];
+    
+    for (let i = 0; i < data.timestamps.length; i++) {
+        if (data.danger_events[i]) {
+            events.push({ frame: i, type: 'danger', label: 'DANGER' });
+        }
+        if (data.warning_events[i]) {
+            events.push({ frame: i, type: 'warning', label: 'WARNING' });
+        }
+        if (data.animals[i] > 0) {
+            events.push({ frame: i, type: 'animal', label: `ANIMAL x${data.animals[i]}` });
+        }
+        if (data.potholes[i] > 0) {
+            events.push({ frame: i, type: 'pothole', label: `POTHOLE x${data.potholes[i]}` });
+        }
+        if (data.humps[i] > 0) {
+            events.push({ frame: i, type: 'hump', label: `HUMP x${data.humps[i]}` });
+        }
+    }
+    
+    // Sort by frame and limit
+    events.sort((a, b) => a.frame - b.frame);
+    const limitedEvents = events.slice(0, 50);
+    
+    if (limitedEvents.length === 0) {
+        timeline.innerHTML = '<p class="info-message">No significant events recorded.</p>';
+        return;
+    }
+    
+    timeline.innerHTML = limitedEvents.map(e => `
+        <div class="timeline-item ${e.type}">
+            <span class="timeline-frame">Frame ${e.frame}</span>
+            <span class="timeline-label">${e.label}</span>
+        </div>
+    `).join('');
+}
+
+buildTimeline();
+</script>
+{% endblock %}
