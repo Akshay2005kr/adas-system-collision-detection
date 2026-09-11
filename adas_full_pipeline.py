@@ -264,139 +264,149 @@ def _label_from_score(score: float) -> str:
 
 
 # ============================================================
-# 6.  VIDEO SOURCE + OUTPUT
+# 6.  DESKTOP MODE EXECUTION FUNCTION
 # ============================================================
-VIDEO_SOURCE = "pothole.mp4"       # >>> change to your file / 0 for webcam <<<
-cap = cv2.VideoCapture(VIDEO_SOURCE)
-frame_count = 0
-
-SHOW_3D_WINDOW    = True
-SAVE_3D_VIDEO     = True
-THREED_OUTPUT_PATH = "reports/3d_view.mp4"
-scene_3d  = None
-writer_3d = None
-
-source_fps = cap.get(cv2.CAP_PROP_FPS)
-if not source_fps or source_fps <= 1:
-    source_fps = 30.0
-frame_interval = 1.0 / source_fps
-
-session_start = time.time()
-
-# ============================================================
-# 7.  MAIN LOOP
-# ============================================================
-while True:
-    loop_start   = time.time()
-    ret, frame   = cap.read()
-    if not ret:
-        break
-
-    frame_count   += 1
-    current_time   = time.time()
-    h, w           = frame.shape[:2]
-    session_t      = current_time - session_start   # seconds since start
-
-    # ---- run all five models ----
-    results = model.track(frame, persist=True, conf=0.35, iou=0.45,
-                           tracker="bytetrack.yaml", verbose=False)
-
-    run_det = (frame_count % DETECT_EVERY_N == 0)
-    run_seg = (frame_count % SEG_EVERY_N    == 0)
-
-    raw_potholes, raw_humps = [], []
-    if run_det:
-        for r in pothole_model(frame, conf=POTHOLE_CONF, iou=POTHOLE_IOU, verbose=False):
+def run_desktop_mode():
+    """Run the desktop ADAS pipeline with video input and OpenCV display."""
+    
+    # ============================================================
+    # 6.1  OPEN VIDEO SOURCE
+    # ============================================================
+    VIDEO_SOURCE = "pothole.mp4"       # >>> change to your file / 0 for webcam <<<
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    if not cap.isOpened():
+        print(f"[error] Cannot open video source: {VIDEO_SOURCE}")
+        return
+    
+    frame_count = 0
+    
+    SHOW_3D_WINDOW    = True
+    SAVE_3D_VIDEO     = True
+    THREED_OUTPUT_PATH = "reports/3d_view.mp4"
+    scene_3d  = None
+    writer_3d = None
+    
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    if not source_fps or source_fps <= 1:
+        source_fps = 30.0
+    frame_interval = 1.0 / source_fps
+    
+    session_start = time.time()
+    
+    # ============================================================
+    # 7.  MAIN LOOP
+    # ============================================================
+    while True:
+        loop_start   = time.time()
+        ret, frame   = cap.read()
+        if not ret:
+            break
+    
+        frame_count   += 1
+        current_time   = time.time()
+        h, w           = frame.shape[:2]
+        session_t      = current_time - session_start   # seconds since start
+    
+        # ---- run all five models ----
+        results = model.track(frame, persist=True, conf=0.35, iou=0.45,
+                               tracker="bytetrack.yaml", verbose=False)
+    
+        run_det = (frame_count % DETECT_EVERY_N == 0)
+        run_seg = (frame_count % SEG_EVERY_N    == 0)
+    
+        raw_potholes, raw_humps = [], []
+        if run_det:
+            for r in pothole_model(frame, conf=POTHOLE_CONF, iou=POTHOLE_IOU, verbose=False):
+                for box in r.boxes:
+                    raw_potholes.append(tuple(map(float, box.xyxy[0])))
+            for r in hump_model(frame, conf=HUMP_CONF, iou=HUMP_IOU, verbose=False):
+                for box in r.boxes:
+                    raw_humps.append(tuple(map(float, box.xyxy[0])))
+    
+        potholes = pothole_tracker.update(raw_potholes)
+        humps    = hump_tracker.update(raw_humps)
+    
+        if run_seg:
+            drivable_results   = drivable_model(frame, conf=DRIVABLE_CONF, verbose=False)
+            last_drivable_mask = build_mask(drivable_results, frame.shape)
+            lane_results       = lane_model(frame, conf=LANE_CONF, verbose=False)
+            last_lane_mask     = build_mask(lane_results, frame.shape)
+    
+        drivable_mask = last_drivable_mask
+        lane_mask     = last_lane_mask
+    
+        vehicles = []
+        animals  = []
+        signs    = []
+    
+        # ---- PASS 1: vehicles / persons ----
+        for r in results:
             for box in r.boxes:
-                raw_potholes.append(tuple(map(float, box.xyxy[0])))
-        for r in hump_model(frame, conf=HUMP_CONF, iou=HUMP_IOU, verbose=False):
-            for box in r.boxes:
-                raw_humps.append(tuple(map(float, box.xyxy[0])))
-
-    potholes = pothole_tracker.update(raw_potholes)
-    humps    = hump_tracker.update(raw_humps)
-
-    if run_seg:
-        drivable_results   = drivable_model(frame, conf=DRIVABLE_CONF, verbose=False)
-        last_drivable_mask = build_mask(drivable_results, frame.shape)
-        lane_results       = lane_model(frame, conf=LANE_CONF, verbose=False)
-        last_lane_mask     = build_mask(lane_results, frame.shape)
-
-    drivable_mask = last_drivable_mask
-    lane_mask     = last_lane_mask
-
-    vehicles = []
-    animals  = []
-    signs    = []
-
-    # ---- PASS 1: vehicles / persons ----
-    for r in results:
-        for box in r.boxes:
-            cls  = int(box.cls[0])
-            name = model.names[cls]
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-            if name in ("pothole", "hump", "lane", "drivable area"):
-                continue
-
-            if name in ("traffic sign", "traffic light"):
-                signs.append((name, x1, y1, x2, y2))
-                continue
-
-            if name not in REAL_WIDTHS:
-                continue
-
-            pixel_width  = max(x2 - x1, 1)
-            raw_distance = (REAL_WIDTHS[name] * FOCAL_LENGTH) / pixel_width
-
-            speed_kmh, ttc, risk = 0.0, float("inf"), "SAFE"
-            final_distance = raw_distance
-            risk_score = 0.0
-
-            if box.id is not None:
-                track_id = int(box.id[0])
-                if track_id in track_history:
-                    prev   = track_history[track_id]
-                    sm_d   = prev["dist"] * 0.8 + raw_distance * 0.2
-                    dt     = current_time - prev["time"]
-                    sm_spd = 0.0
-                    if dt > 0:
-                        raw_spd_ms = (prev["dist"] - sm_d) / dt
-                        sm_spd     = prev.get("speed", 0) * 0.8 + raw_spd_ms * 0.2
-                        if sm_spd > 0.3:
-                            speed_kmh = sm_spd * 3.6
-                            ttc       = sm_d / sm_spd
-                    final_distance = sm_d
-                    track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
-                else:
-                    track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
-
-                features = extract_features(
-                    track_id, (x1, y1, x2, y2), frame.shape, final_distance, current_time)
-
-                # ---- NEW: continuous ML risk score, smoothed per-track ----
-                raw_score  = collision_model.predict_proba(features[0])
-                prev_score = risk_score_history.get(track_id, raw_score)
-                risk_score = 0.35 * raw_score + 0.65 * prev_score
-                risk_score_history[track_id] = risk_score
-                risk = _label_from_score(risk_score)
-
-            if final_distance > 12:
-                risk = "SAFE"
-                risk_score = min(risk_score, 0.05)
-            elif final_distance > 5 and risk == "DANGER":
-                risk = "WARNING"
-                risk_score = min(risk_score, 0.55)
-
-            risk_color  = {"DANGER": (0, 0, 255), "WARNING": (0, 165, 255), "SAFE": (0, 255, 0)}[risk]
-            class_color = CLASS_COLORS.get(name, (255, 255, 255))
-
-            vehicles.append({
-                "name": name, "box": (x1, y1, x2, y2),
-                "distance": final_distance, "speed": speed_kmh, "ttc": ttc,
-                "class_color": class_color, "risk_color": risk_color, "risk": risk,
-                "risk_score": risk_score,
-            })
+                cls  = int(box.cls[0])
+                name = model.names[cls]
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+    
+                if name in ("pothole", "hump", "lane", "drivable area"):
+                    continue
+    
+                if name in ("traffic sign", "traffic light"):
+                    signs.append((name, x1, y1, x2, y2))
+                    continue
+    
+                if name not in REAL_WIDTHS:
+                    continue
+    
+                pixel_width  = max(x2 - x1, 1)
+                raw_distance = (REAL_WIDTHS[name] * FOCAL_LENGTH) / pixel_width
+    
+                speed_kmh, ttc, risk = 0.0, float("inf"), "SAFE"
+                final_distance = raw_distance
+                risk_score = 0.0
+    
+                if box.id is not None:
+                    track_id = int(box.id[0])
+                    if track_id in track_history:
+                        prev   = track_history[track_id]
+                        sm_d   = prev["dist"] * 0.8 + raw_distance * 0.2
+                        dt     = current_time - prev["time"]
+                        sm_spd = 0.0
+                        if dt > 0:
+                            raw_spd_ms = (prev["dist"] - sm_d) / dt
+                            sm_spd     = prev.get("speed", 0) * 0.8 + raw_spd_ms * 0.2
+                            if sm_spd > 0.3:
+                                speed_kmh = sm_spd * 3.6
+                                ttc       = sm_d / sm_spd
+                        final_distance = sm_d
+                        track_history[track_id] = {"dist": sm_d, "time": current_time, "speed": sm_spd}
+                    else:
+                        track_history[track_id] = {"dist": raw_distance, "time": current_time, "speed": 0}
+    
+                    features = extract_features(
+                        track_id, (x1, y1, x2, y2), frame.shape, final_distance, current_time)
+    
+                    # ---- NEW: continuous ML risk score, smoothed per-track ----
+                    raw_score  = collision_model.predict_proba(features[0])
+                    prev_score = risk_score_history.get(track_id, raw_score)
+                    risk_score = 0.35 * raw_score + 0.65 * prev_score
+                    risk_score_history[track_id] = risk_score
+                    risk = _label_from_score(risk_score)
+    
+                if final_distance > 12:
+                    risk = "SAFE"
+                    risk_score = min(risk_score, 0.05)
+                elif final_distance > 5 and risk == "DANGER":
+                    risk = "WARNING"
+                    risk_score = min(risk_score, 0.55)
+    
+                risk_color  = {"DANGER": (0, 0, 255), "WARNING": (0, 165, 255), "SAFE": (0, 255, 0)}[risk]
+                class_color = CLASS_COLORS.get(name, (255, 255, 255))
+    
+                vehicles.append({
+                    "name": name, "box": (x1, y1, x2, y2),
+                    "distance": final_distance, "speed": speed_kmh, "ttc": ttc,
+                    "class_color": class_color, "risk_color": risk_color, "risk": risk,
+                    "risk_score": risk_score,
+                })
 
     # ---- ANIMAL DETECTION (if model loaded) ----
     if animal_model is not None:
@@ -808,19 +818,26 @@ while True:
     if cv2.waitKey(remaining_ms) & 0xFF == ord("q"):
         break
 
-# ============================================================
-# 8.  CLEANUP + WEB REPORT
-# ============================================================
-cap.release()
-if writer_3d is not None:
-    writer_3d.release()
-    print(f"[main] 3D view saved → {THREED_OUTPUT_PATH}")
-cv2.destroyAllWindows()
-dashboard.close()
-logger.close()
+    # ============================================================
+    # 8.  CLEANUP + WEB REPORT
+    # ============================================================
+    cap.release()
+    if writer_3d is not None:
+        writer_3d.release()
+        print(f"[main] 3D view saved → {THREED_OUTPUT_PATH}")
+    cv2.destroyAllWindows()
+    dashboard.close()
+    logger.close()
+    
+    # Generate the interactive HTML web report
+    session_label = time.strftime("Run %Y-%m-%d %H:%M")
+    web_reporter.generate(logger.filepath, session_name=session_label)
+    
+    print("[main] Done.")
 
-# Generate the interactive HTML web report
-session_label = time.strftime("Run %Y-%m-%d %H:%M")
-web_reporter.generate(logger.filepath, session_name=session_label)
 
-print("[main] Done.")
+# ============================================================
+# ENTRY POINT - Only run desktop mode when executed directly
+# ============================================================
+if __name__ == "__main__":
+    run_desktop_mode()
