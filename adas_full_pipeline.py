@@ -498,342 +498,342 @@ def run_desktop_mode():
         if writer_3d is not None:
             writer_3d.write(canvas_3d)
 
-    closest_vehicle = min(vehicles, key=lambda v: v["distance"], default=None)
-    closest_animal = min(animals, key=lambda a: a["distance"], default=None) if animals else None
+        closest_vehicle = min(vehicles, key=lambda v: v["distance"], default=None)
+        closest_animal = min(animals, key=lambda a: a["distance"], default=None) if animals else None
     
-    # Determine overall closest obstacle (vehicle or animal)
-    all_obstacles = []
-    if closest_vehicle:
-        all_obstacles.append(closest_vehicle)
-    if closest_animal:
-        all_obstacles.append(closest_animal)
+        # Determine overall closest obstacle (vehicle or animal)
+        all_obstacles = []
+        if closest_vehicle:
+            all_obstacles.append(closest_vehicle)
+        if closest_animal:
+            all_obstacles.append(closest_animal)
     
-    closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
-    risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
-    alert.check(risk_now)
+        closest_obstacle = min(all_obstacles, key=lambda x: x["distance"], default=None)
+        risk_now = closest_obstacle["risk"] if closest_obstacle else "SAFE"
+        alert.check(risk_now)
 
-    if closest_obstacle:
-        dashboard.update(
-            closest_obstacle["distance"], closest_obstacle["speed"],
-            closest_obstacle["ttc"], closest_obstacle["risk"])
+        if closest_obstacle:
+            dashboard.update(
+                closest_obstacle["distance"], closest_obstacle["speed"],
+                closest_obstacle["ttc"], closest_obstacle["risk"])
 
-    # ============================================================
-    # ①  SMOOTH BRAKE PREDICTION (now speed- and ML-score-aware)
-    # ============================================================
-    if closest_obstacle:
-        brake_pct, brake_col = brake_pred.update(
-            closest_obstacle["distance"],
-            closest_obstacle["ttc"],
-            closest_obstacle["risk"],
-            speed_kmh=closest_obstacle["speed"],
-            risk_score=closest_obstacle.get("risk_score"))
-    else:
-        brake_pct, brake_col = brake_pred.update(
-            999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
-
-    # Log brake history for the web report chart
-    web_reporter.log_brake(session_t, brake_pct)
-
-    # ============================================================
-    # ②  TRAJECTORY PLANNING (replaces simple direction arrow)
-    # ============================================================
-    direction, trajectory_pts, is_safe = traj_planner.compute_safe_trajectory(
-        vehicles, animals, potholes, humps, frame.shape, drivable_mask)
-    
-    # Draw the real trajectory on frame
-    frame = traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
-    
-    # Also draw legacy direction arrow (smaller, secondary indicator)
-    frame = dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
-
-    # ============================================================
-    # ③  EVENT CAPTURE (for web gallery)
-    # ============================================================
-    if risk_now == "DANGER" and closest_obstacle:
-        ttc_str = (f"{closest_obstacle['ttc']:.1f}s"
-                   if closest_obstacle["ttc"] != float("inf") else "--")
-        event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
-        web_reporter.capture_event(frame, event_type, {
-            "dist":    f"{closest_obstacle['distance']:.1f} m",
-            "ttc":     ttc_str,
-            "vehicle": closest_obstacle["name"],
-            "speed":   f"{closest_obstacle['speed']:.1f} km/h",
-        })
-    elif risk_now == "WARNING" and closest_obstacle:
-        event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "WARNING"
-        web_reporter.capture_event(frame, event_type, {
-            "dist":    f"{closest_obstacle['distance']:.1f} m",
-            "vehicle": closest_obstacle["name"],
-        }, cooldown=3.0)
-
-    if brake_pct > 65 and closest_obstacle:
-        web_reporter.capture_event(frame, "BRAKE", {
-            "brake":  f"{brake_pct:.0f}%",
-            "dist":   f"{closest_obstacle['distance']:.1f} m",
-            "speed":  f"{closest_obstacle['speed']:.1f} km/h",
-        })
-    
-    # Capture animal events separately
-    for animal in animals:
-        if animal["risk"] == "DANGER":
-            web_reporter.capture_event(frame, "ANIMAL", {
-                "dist": f"{animal['distance']:.1f} m",
-                "type": animal["name"],
-            }, cooldown=2.0)
-
-    if potholes:
-        (px1, py1, px2, py2) = potholes[0]
-        pd, pd_est = _ground_distance(py2, h, box_height_px=(py2 - py1))
-        if pd is not None:
-            w_cm, h_cm = _ground_size_cm(px1, py1, px2, py2, pd)
-            dist_str = f"{'~' if pd_est else ''}{pd:.1f} m"
-            size_str = f"{w_cm}x{h_cm} cm"
+        # ============================================================
+        # ①  SMOOTH BRAKE PREDICTION (now speed- and ML-score-aware)
+        # ============================================================
+        if closest_obstacle:
+            brake_pct, brake_col = brake_pred.update(
+                closest_obstacle["distance"],
+                closest_obstacle["ttc"],
+                closest_obstacle["risk"],
+                speed_kmh=closest_obstacle["speed"],
+                risk_score=closest_obstacle.get("risk_score"))
         else:
-            dist_str, size_str = "--", "--"
-        web_reporter.capture_event(frame, "POTHOLE", {
-            "dist": dist_str,
-            "size": size_str,
-        }, cooldown=5.0)
+            brake_pct, brake_col = brake_pred.update(
+                999.0, float("inf"), "SAFE", speed_kmh=0.0, risk_score=0.0)
 
-    if humps:
-        (hx1, hy1, hx2, hy2) = humps[0]
-        hd, hd_est = _ground_distance(hy2, h, box_height_px=(hy2 - hy1))
-        if hd is not None:
-            w_cm, h_cm = _ground_size_cm(hx1, hy1, hx2, hy2, hd)
-            dist_str = f"{'~' if hd_est else ''}{hd:.1f} m"
-            size_str = f"{w_cm}x{h_cm} cm"
-        else:
-            dist_str, size_str = "--", "--"
-        web_reporter.capture_event(frame, "HUMP", {
-            "dist": dist_str,
-            "size": size_str,
-        }, cooldown=5.0)
+        # Log brake history for the web report chart
+        web_reporter.log_brake(session_t, brake_pct)
 
-    # ============================================================
-    # TESLA MODE
-    # ============================================================
-    if TESLA_MODE:
-        known_mask = build_known_mask(
-            frame.shape,
-            vehicle_boxes=[v["box"] for v in vehicles],
-            pothole_boxes=potholes,
-            hump_boxes=humps,
-            lane_mask=lane_mask,
-            drivable_mask=drivable_mask)
-        frame = render_painted_background(
-            frame, known_mask,
-            inpaint_radius=TESLA_INPAINT_RADIUS, downscale=TESLA_DOWNSCALE)
+        # ============================================================
+        # ②  TRAJECTORY PLANNING (replaces simple direction arrow)
+        # ============================================================
+        direction, trajectory_pts, is_safe = traj_planner.compute_safe_trajectory(
+            vehicles, animals, potholes, humps, frame.shape, drivable_mask)
+    
+        # Draw the real trajectory on frame
+        frame = traj_planner.draw_trajectory(frame, trajectory_pts, direction, drivable_mask, alpha=0.45)
+    
+        # Also draw legacy direction arrow (smaller, secondary indicator)
+        frame = dir_pred.draw_arrow(frame, direction, drivable_mask, risk=risk_now)
 
-    # ============================================================
-    # PASS 2: DRAW — drivable + lanes (background layer)
-    # ============================================================
-    if drivable_mask is not None:
-        frame = blend_mask(frame, drivable_mask, color=DRIVABLE_COLOR, alpha=0.28)
-    if lane_mask is not None:
-        frame = blend_mask(frame, lane_mask, color=LANE_COLOR, alpha=0.55)
+        # ============================================================
+        # ③  EVENT CAPTURE (for web gallery)
+        # ============================================================
+        if risk_now == "DANGER" and closest_obstacle:
+            ttc_str = (f"{closest_obstacle['ttc']:.1f}s"
+                       if closest_obstacle["ttc"] != float("inf") else "--")
+            event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "DANGER"
+            web_reporter.capture_event(frame, event_type, {
+                "dist":    f"{closest_obstacle['distance']:.1f} m",
+                "ttc":     ttc_str,
+                "vehicle": closest_obstacle["name"],
+                "speed":   f"{closest_obstacle['speed']:.1f} km/h",
+            })
+        elif risk_now == "WARNING" and closest_obstacle:
+            event_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else "WARNING"
+            web_reporter.capture_event(frame, event_type, {
+                "dist":    f"{closest_obstacle['distance']:.1f} m",
+                "vehicle": closest_obstacle["name"],
+            }, cooldown=3.0)
 
-    # ---- semi-transparent card backgrounds ----
-    overlay = frame.copy()
-    card_h = 85
-    for v in vehicles:
-        x1, y1, x2, y2 = v["box"]
-        card_y1 = max(0, y1 - card_h)
-        cv2.rectangle(overlay, (x1, card_y1), (x1 + 170, card_y1 + card_h), (15, 15, 15), -1)
-    # top-left HUD panel
-    cv2.rectangle(overlay, (10, 10), (245, 165), (15, 15, 15), -1)
+        if brake_pct > 65 and closest_obstacle:
+            web_reporter.capture_event(frame, "BRAKE", {
+                "brake":  f"{brake_pct:.0f}%",
+                "dist":   f"{closest_obstacle['distance']:.1f} m",
+                "speed":  f"{closest_obstacle['speed']:.1f} km/h",
+            })
+    
+        # Capture animal events separately
+        for animal in animals:
+            if animal["risk"] == "DANGER":
+                web_reporter.capture_event(frame, "ANIMAL", {
+                    "dist": f"{animal['distance']:.1f} m",
+                    "type": animal["name"],
+                }, cooldown=2.0)
 
-    # ---- SMOOTH BRAKE BAR (drawn on overlay) ----
-    bar_w, bar_h = 420, 22
-    bar_x = w // 2 - bar_w // 2
-    bar_y = h - 55
-    cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (30, 30, 30), -1)
-    fill_w = int((brake_pct / 100.0) * bar_w)
-    if fill_w > 0:
-        cv2.rectangle(overlay, (bar_x, bar_y),
-                      (bar_x + fill_w, bar_y + bar_h), brake_col, -1)
+        if potholes:
+            (px1, py1, px2, py2) = potholes[0]
+            pd, pd_est = _ground_distance(py2, h, box_height_px=(py2 - py1))
+            if pd is not None:
+                w_cm, h_cm = _ground_size_cm(px1, py1, px2, py2, pd)
+                dist_str = f"{'~' if pd_est else ''}{pd:.1f} m"
+                size_str = f"{w_cm}x{h_cm} cm"
+            else:
+                dist_str, size_str = "--", "--"
+            web_reporter.capture_event(frame, "POTHOLE", {
+                "dist": dist_str,
+                "size": size_str,
+            }, cooldown=5.0)
 
-    cv2.addWeighted(overlay, 0.60, frame, 0.40, 0, frame)
+        if humps:
+            (hx1, hy1, hx2, hy2) = humps[0]
+            hd, hd_est = _ground_distance(hy2, h, box_height_px=(hy2 - hy1))
+            if hd is not None:
+                w_cm, h_cm = _ground_size_cm(hx1, hy1, hx2, hy2, hd)
+                dist_str = f"{'~' if hd_est else ''}{hd:.1f} m"
+                size_str = f"{w_cm}x{h_cm} cm"
+            else:
+                dist_str, size_str = "--", "--"
+            web_reporter.capture_event(frame, "HUMP", {
+                "dist": dist_str,
+                "size": size_str,
+            }, cooldown=5.0)
 
-    # ============================================================
-    # PASS 3: OPAQUE TEXT / BORDERS
-    # ============================================================
+        # ============================================================
+        # TESLA MODE
+        # ============================================================
+        if TESLA_MODE:
+            known_mask = build_known_mask(
+                frame.shape,
+                vehicle_boxes=[v["box"] for v in vehicles],
+                pothole_boxes=potholes,
+                hump_boxes=humps,
+                lane_mask=lane_mask,
+                drivable_mask=drivable_mask)
+            frame = render_painted_background(
+                frame, known_mask,
+                inpaint_radius=TESLA_INPAINT_RADIUS, downscale=TESLA_DOWNSCALE)
 
-    # ---- Potholes with distance + size (always shows a value now) ----
-    for (x1, y1, x2, y2) in potholes:
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        p_color = CLASS_COLORS["pothole"]
-        cv2.rectangle(frame, (x1, y1), (x2, y2), p_color, 2, cv2.LINE_AA)
+        # ============================================================
+        # PASS 2: DRAW — drivable + lanes (background layer)
+        # ============================================================
+        if drivable_mask is not None:
+            frame = blend_mask(frame, drivable_mask, color=DRIVABLE_COLOR, alpha=0.28)
+        if lane_mask is not None:
+            frame = blend_mask(frame, lane_mask, color=LANE_COLOR, alpha=0.55)
 
-        dist_m, is_est = _ground_distance(y2, h, box_height_px=(y2 - y1))
-        if dist_m is not None:
-            w_cm, h_cm = _ground_size_cm(x1, y1, x2, y2, dist_m)
-            tag = "~" if is_est else ""
-            line1 = f"POTHOLE  {tag}{dist_m:.1f} m"
-            line2 = f"Size: {tag}{w_cm}x{h_cm} cm"
-            for line, yoff in ((line1, -24), (line2, -8)):
-                (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                cv2.rectangle(frame,
-                              (x1 - 2, y1 + yoff - th - 2),
-                              (x1 + tw + 4, y1 + yoff + 4),
-                              (15, 15, 15), -1)
-                cv2.putText(frame, line, (x1, y1 + yoff),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_color, 1, cv2.LINE_AA)
-        else:
-            cv2.putText(frame, "POTHOLE", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, p_color, 2, cv2.LINE_AA)
+        # ---- semi-transparent card backgrounds ----
+        overlay = frame.copy()
+        card_h = 85
+        for v in vehicles:
+            x1, y1, x2, y2 = v["box"]
+            card_y1 = max(0, y1 - card_h)
+            cv2.rectangle(overlay, (x1, card_y1), (x1 + 170, card_y1 + card_h), (15, 15, 15), -1)
+        # top-left HUD panel
+        cv2.rectangle(overlay, (10, 10), (245, 165), (15, 15, 15), -1)
 
-    # ---- Humps with distance + size (always shows a value now) ----
-    for (x1, y1, x2, y2) in humps:
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        hcolor = CLASS_COLORS["hump"]
-        cv2.rectangle(frame, (x1, y1), (x2, y2), hcolor, 2, cv2.LINE_AA)
+        # ---- SMOOTH BRAKE BAR (drawn on overlay) ----
+        bar_w, bar_h = 420, 22
+        bar_x = w // 2 - bar_w // 2
+        bar_y = h - 55
+        cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (30, 30, 30), -1)
+        fill_w = int((brake_pct / 100.0) * bar_w)
+        if fill_w > 0:
+            cv2.rectangle(overlay, (bar_x, bar_y),
+                          (bar_x + fill_w, bar_y + bar_h), brake_col, -1)
 
-        dist_m, is_est = _ground_distance(y2, h, box_height_px=(y2 - y1))
-        if dist_m is not None:
-            w_cm, h_cm = _ground_size_cm(x1, y1, x2, y2, dist_m)
-            tag = "~" if is_est else ""
-            line1 = f"HUMP  {tag}{dist_m:.1f} m"
-            line2 = f"Size: {tag}{w_cm}x{h_cm} cm"
-            for line, yoff in ((line1, -24), (line2, -8)):
-                (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                cv2.rectangle(frame,
-                              (x1 - 2, y1 + yoff - th - 2),
-                              (x1 + tw + 4, y1 + yoff + 4),
-                              (15, 15, 15), -1)
-                cv2.putText(frame, line, (x1, y1 + yoff),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, hcolor, 1, cv2.LINE_AA)
-        else:
-            cv2.putText(frame, "HUMP", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, hcolor, 2, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.60, frame, 0.40, 0, frame)
 
-    # ---- Traffic signs ----
-    for (name, x1, y1, x2, y2) in signs:
-        s_color = CLASS_COLORS.get(name, (102, 255, 255))
-        cv2.rectangle(frame, (x1, y1), (x2, y2), s_color, 2, cv2.LINE_AA)
-        cv2.putText(frame, name.upper(), (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, s_color, 2, cv2.LINE_AA)
+        # ============================================================
+        # PASS 3: OPAQUE TEXT / BORDERS
+        # ============================================================
 
-    # ---- Vehicle cards ----
-    for v in vehicles:
-        x1, y1, x2, y2 = v["box"]
-        card_y1 = max(0, y1 - card_h)
-        speed_str = f"{v['speed']:.1f} km/h" if v["speed"] > 0 else "-- km/h"
-        ttc_str   = f"{v['ttc']:.1f} s"       if v["ttc"] != float("inf") else "-- s"
+        # ---- Potholes with distance + size (always shows a value now) ----
+        for (x1, y1, x2, y2) in potholes:
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            p_color = CLASS_COLORS["pothole"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), p_color, 2, cv2.LINE_AA)
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), v["class_color"], 2, cv2.LINE_AA)
-        cv2.rectangle(frame, (x1, card_y1), (x1 + 170, card_y1 + card_h),
-                      v["class_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, v["name"].upper(),
-                    (x1 + 8, card_y1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, v["class_color"], 2, cv2.LINE_AA)
-        cv2.putText(frame, f"Risk : {v['risk']}",
-                    (x1 + 8, card_y1 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, v["risk_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Dist : {v['distance']:.1f} m",
-                    (x1 + 8, card_y1 + 49), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Speed: {speed_str}",
-                    (x1 + 8, card_y1 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"TTC  : {ttc_str}",
-                    (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            dist_m, is_est = _ground_distance(y2, h, box_height_px=(y2 - y1))
+            if dist_m is not None:
+                w_cm, h_cm = _ground_size_cm(x1, y1, x2, y2, dist_m)
+                tag = "~" if is_est else ""
+                line1 = f"POTHOLE  {tag}{dist_m:.1f} m"
+                line2 = f"Size: {tag}{w_cm}x{h_cm} cm"
+                for line, yoff in ((line1, -24), (line2, -8)):
+                    (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                    cv2.rectangle(frame,
+                                  (x1 - 2, y1 + yoff - th - 2),
+                                  (x1 + tw + 4, y1 + yoff + 4),
+                                  (15, 15, 15), -1)
+                    cv2.putText(frame, line, (x1, y1 + yoff),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_color, 1, cv2.LINE_AA)
+            else:
+                cv2.putText(frame, "POTHOLE", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, p_color, 2, cv2.LINE_AA)
 
-    # ---- Animal cards ----
-    for a in animals:
-        x1, y1, x2, y2 = a["box"]
-        card_y1 = max(0, y1 - card_h)
-        speed_str = f"{a['speed']:.1f} km/h" if a["speed"] > 0 else "-- km/h"
-        ttc_str   = f"{a['ttc']:.1f} s"       if a["ttc"] != float("inf") else "-- s"
+        # ---- Humps with distance + size (always shows a value now) ----
+        for (x1, y1, x2, y2) in humps:
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            hcolor = CLASS_COLORS["hump"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), hcolor, 2, cv2.LINE_AA)
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), a["class_color"], 2, cv2.LINE_AA)
-        cv2.rectangle(frame, (x1, card_y1), (x1 + 170, card_y1 + card_h),
-                      a["class_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, a["name"].upper() + " (ANIMAL)",
-                    (x1 + 8, card_y1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, a["class_color"], 2, cv2.LINE_AA)
-        cv2.putText(frame, f"Risk : {a['risk']}",
-                    (x1 + 8, card_y1 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, a["risk_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Dist : {a['distance']:.1f} m",
-                    (x1 + 8, card_y1 + 49), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Speed: {speed_str}",
-                    (x1 + 8, card_y1 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"TTC  : {ttc_str}",
-                    (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            dist_m, is_est = _ground_distance(y2, h, box_height_px=(y2 - y1))
+            if dist_m is not None:
+                w_cm, h_cm = _ground_size_cm(x1, y1, x2, y2, dist_m)
+                tag = "~" if is_est else ""
+                line1 = f"HUMP  {tag}{dist_m:.1f} m"
+                line2 = f"Size: {tag}{w_cm}x{h_cm} cm"
+                for line, yoff in ((line1, -24), (line2, -8)):
+                    (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                    cv2.rectangle(frame,
+                                  (x1 - 2, y1 + yoff - th - 2),
+                                  (x1 + tw + 4, y1 + yoff + 4),
+                                  (15, 15, 15), -1)
+                    cv2.putText(frame, line, (x1, y1 + yoff),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, hcolor, 1, cv2.LINE_AA)
+            else:
+                cv2.putText(frame, "HUMP", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, hcolor, 2, cv2.LINE_AA)
 
-    # ---- Top-left HUD status panel ----
-    cv2.rectangle(frame, (10, 10), (245, 165), (255, 255, 255), 1, cv2.LINE_AA)
-    total_objects = len(vehicles) + len(animals) + len(potholes) + len(humps) + len(signs)
-    cv2.putText(frame, "ADAS STATUS", (25, 34),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame, f"Objects : {total_objects}", (25, 57),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
-    lane_status = "OK" if (lane_mask is not None and lane_mask.any()) else "--"
-    drv_status  = "OK" if (drivable_mask is not None and drivable_mask.any()) else "--"
-    cv2.putText(frame, f"Lane    : {lane_status}", (25, 76),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, LANE_COLOR, 1, cv2.LINE_AA)
-    cv2.putText(frame, f"Drivable: {drv_status}", (25, 95),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, DRIVABLE_COLOR, 1, cv2.LINE_AA)
+        # ---- Traffic signs ----
+        for (name, x1, y1, x2, y2) in signs:
+            s_color = CLASS_COLORS.get(name, (102, 255, 255))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), s_color, 2, cv2.LINE_AA)
+            cv2.putText(frame, name.upper(), (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, s_color, 2, cv2.LINE_AA)
 
-    if closest_obstacle:
-        obs_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else closest_obstacle["name"].upper()
-        cv2.putText(frame, f"Closest : {obs_type}", (25, 116),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["class_color"], 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Distance: {closest_obstacle['distance']:.1f} m", (25, 134),
+        # ---- Vehicle cards ----
+        for v in vehicles:
+            x1, y1, x2, y2 = v["box"]
+            card_y1 = max(0, y1 - card_h)
+            speed_str = f"{v['speed']:.1f} km/h" if v["speed"] > 0 else "-- km/h"
+            ttc_str   = f"{v['ttc']:.1f} s"       if v["ttc"] != float("inf") else "-- s"
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), v["class_color"], 2, cv2.LINE_AA)
+            cv2.rectangle(frame, (x1, card_y1), (x1 + 170, card_y1 + card_h),
+                          v["class_color"], 1, cv2.LINE_AA)
+            cv2.putText(frame, v["name"].upper(),
+                        (x1 + 8, card_y1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, v["class_color"], 2, cv2.LINE_AA)
+            cv2.putText(frame, f"Risk : {v['risk']}",
+                        (x1 + 8, card_y1 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, v["risk_color"], 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Dist : {v['distance']:.1f} m",
+                        (x1 + 8, card_y1 + 49), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Speed: {speed_str}",
+                        (x1 + 8, card_y1 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"TTC  : {ttc_str}",
+                        (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # ---- Animal cards ----
+        for a in animals:
+            x1, y1, x2, y2 = a["box"]
+            card_y1 = max(0, y1 - card_h)
+            speed_str = f"{a['speed']:.1f} km/h" if a["speed"] > 0 else "-- km/h"
+            ttc_str   = f"{a['ttc']:.1f} s"       if a["ttc"] != float("inf") else "-- s"
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), a["class_color"], 2, cv2.LINE_AA)
+            cv2.rectangle(frame, (x1, card_y1), (x1 + 170, card_y1 + card_h),
+                          a["class_color"], 1, cv2.LINE_AA)
+            cv2.putText(frame, a["name"].upper() + " (ANIMAL)",
+                        (x1 + 8, card_y1 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, a["class_color"], 2, cv2.LINE_AA)
+            cv2.putText(frame, f"Risk : {a['risk']}",
+                        (x1 + 8, card_y1 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, a["risk_color"], 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Dist : {a['distance']:.1f} m",
+                        (x1 + 8, card_y1 + 49), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Speed: {speed_str}",
+                        (x1 + 8, card_y1 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"TTC  : {ttc_str}",
+                        (x1 + 8, card_y1 + 79), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # ---- Top-left HUD status panel ----
+        cv2.rectangle(frame, (10, 10), (245, 165), (255, 255, 255), 1, cv2.LINE_AA)
+        total_objects = len(vehicles) + len(animals) + len(potholes) + len(humps) + len(signs)
+        cv2.putText(frame, "ADAS STATUS", (25, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Objects : {total_objects}", (25, 57),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Risk    : {closest_obstacle['risk']}", (25, 152),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["risk_color"], 2, cv2.LINE_AA)
-    else:
-        cv2.putText(frame, "Closest : None", (25, 116),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(frame, "Risk    : SAFE", (25, 152),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2, cv2.LINE_AA)
+        lane_status = "OK" if (lane_mask is not None and lane_mask.any()) else "--"
+        drv_status  = "OK" if (drivable_mask is not None and drivable_mask.any()) else "--"
+        cv2.putText(frame, f"Lane    : {lane_status}", (25, 76),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, LANE_COLOR, 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Drivable: {drv_status}", (25, 95),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, DRIVABLE_COLOR, 1, cv2.LINE_AA)
 
-    # ---- Brake bar labels (smooth value + speed) ----
-    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (200, 200, 200), 1, cv2.LINE_AA)
-    brake_label = f"BRAKE: {int(brake_pct)}%"
-    cv2.putText(frame, brake_label, (bar_x + bar_w + 12, bar_y + 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, brake_col, 2, cv2.LINE_AA)
+        if closest_obstacle:
+            obs_type = "ANIMAL" if closest_obstacle.get("type") == "animal" else closest_obstacle["name"].upper()
+            cv2.putText(frame, f"Closest : {obs_type}", (25, 116),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["class_color"], 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Distance: {closest_obstacle['distance']:.1f} m", (25, 134),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Risk    : {closest_obstacle['risk']}", (25, 152),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, closest_obstacle["risk_color"], 2, cv2.LINE_AA)
+        else:
+            cv2.putText(frame, "Closest : None", (25, 116),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(frame, "Risk    : SAFE", (25, 152),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2, cv2.LINE_AA)
 
-    # ---- Speed display next to brake bar ----
-    if closest_vehicle and closest_vehicle["speed"] > 0:
-        spd_label = f"{closest_vehicle['speed']:.0f} km/h"
-        cv2.putText(frame, spd_label, (bar_x - 90, bar_y + 17),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 220, 80), 2, cv2.LINE_AA)
+        # ---- Brake bar labels (smooth value + speed) ----
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (200, 200, 200), 1, cv2.LINE_AA)
+        brake_label = f"BRAKE: {int(brake_pct)}%"
+        cv2.putText(frame, brake_label, (bar_x + bar_w + 12, bar_y + 17),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, brake_col, 2, cv2.LINE_AA)
 
-    # ---- Direction badge (top-right corner) ----
-    dir_colors = {"STRAIGHT": (0, 245, 80), "LEFT": (0, 210, 255), "RIGHT": (30, 160, 255)}
-    dir_icons  = {"STRAIGHT": "▲ STRAIGHT", "LEFT": "◀ LEFT", "RIGHT": "▶ RIGHT"}
-    dir_col    = dir_colors[direction]
-    dir_text   = dir_icons[direction]
-    (dtw, _), _ = cv2.getTextSize(dir_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-    dx = w - dtw - 20
-    cv2.rectangle(frame, (dx - 8, 12), (w - 10, 38), (15, 15, 15), -1)
-    cv2.putText(frame, dir_text, (dx, 32),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, dir_col, 2, cv2.LINE_AA)
+        # ---- Speed display next to brake bar ----
+        if closest_vehicle and closest_vehicle["speed"] > 0:
+            spd_label = f"{closest_vehicle['speed']:.0f} km/h"
+            cv2.putText(frame, spd_label, (bar_x - 90, bar_y + 17),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 220, 80), 2, cv2.LINE_AA)
 
-    # ---- DANGER flash overlay ----
-    frame = alert.draw_flash(frame, risk_now)
+        # ---- Direction badge (top-right corner) ----
+        dir_colors = {"STRAIGHT": (0, 245, 80), "LEFT": (0, 210, 255), "RIGHT": (30, 160, 255)}
+        dir_icons  = {"STRAIGHT": "▲ STRAIGHT", "LEFT": "◀ LEFT", "RIGHT": "▶ RIGHT"}
+        dir_col    = dir_colors[direction]
+        dir_text   = dir_icons[direction]
+        (dtw, _), _ = cv2.getTextSize(dir_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        dx = w - dtw - 20
+        cv2.rectangle(frame, (dx - 8, 12), (w - 10, 38), (15, 15, 15), -1)
+        cv2.putText(frame, dir_text, (dx, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, dir_col, 2, cv2.LINE_AA)
 
-    window_title = ("ADAS - Full Pipeline [TESLA MODE]"
-                    if TESLA_MODE else "ADAS - Full Pipeline [NORMAL COLOR]")
-    cv2.imshow(window_title, frame)
+        # ---- DANGER flash overlay ----
+        frame = alert.draw_flash(frame, risk_now)
 
-    elapsed_ms    = int((time.time() - loop_start) * 1000)
-    remaining_ms  = max(1, int(frame_interval * 1000) - elapsed_ms)
-    if cv2.waitKey(remaining_ms) & 0xFF == ord("q"):
-        break
+        window_title = ("ADAS - Full Pipeline [TESLA MODE]"
+                        if TESLA_MODE else "ADAS - Full Pipeline [NORMAL COLOR]")
+        cv2.imshow(window_title, frame)
 
-    # ============================================================
-    # 8.  CLEANUP + WEB REPORT
-    # ============================================================
-    cap.release()
-    if writer_3d is not None:
-        writer_3d.release()
-        print(f"[main] 3D view saved → {THREED_OUTPUT_PATH}")
-    cv2.destroyAllWindows()
-    dashboard.close()
-    logger.close()
-    
-    # Generate the interactive HTML web report
-    session_label = time.strftime("Run %Y-%m-%d %H:%M")
-    web_reporter.generate(logger.filepath, session_name=session_label)
-    
-    print("[main] Done.")
+        elapsed_ms    = int((time.time() - loop_start) * 1000)
+        remaining_ms  = max(1, int(frame_interval * 1000) - elapsed_ms)
+        if cv2.waitKey(remaining_ms) & 0xFF == ord("q"):
+            break
+
+# ============================================================
+# 8.  CLEANUP + WEB REPORT
+# ============================================================
+cap.release()
+if writer_3d is not None:
+    writer_3d.release()
+    print(f"[main] 3D view saved → {THREED_OUTPUT_PATH}")
+cv2.destroyAllWindows()
+dashboard.close()
+logger.close()
+
+# Generate the interactive HTML web report
+session_label = time.strftime("Run %Y-%m-%d %H:%M")
+web_reporter.generate(logger.filepath, session_name=session_label)
+
+print("[main] Done.")
 
 
 # ============================================================
